@@ -1,459 +1,490 @@
-<!DOCTYPE html>
-<html lang="ar" dir="rtl">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>نظام إدارة المخزون - حركة المواد</title>
-    <!-- Tailwind CSS CDN -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <!-- FontAwesome Icons -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <!-- Google Font Cairo -->
-    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;800&display=swap" rel="stylesheet">
-    
-    <style>
-        * {
-            font-family: 'Cairo', sans-serif;
-        }
-        @media print {
-            .no-print {
-                display: none !important;
-            }
-            .print-only {
-                display: block !important;
-            }
-            body {
-                background: #fff !important;
-                color: #000 !important;
-            }
-            .shadow-custom {
-                box-shadow: none !important;
-                border: 1px solid #ccc !important;
-            }
-        }
-        .print-only {
-            display: none;
-        }
-    </style>
-</head>
-<body class="bg-slate-900 text-slate-100 min-h-screen pb-12">
+import React, { useState, useEffect } from 'react';
+import { createClient } from '@supabase/supabase-js';
+import { 
+  ArrowDownLeft, 
+  ArrowUpRight, 
+  Scale, 
+  ListCheck, 
+  Printer, 
+  FileSpreadsheet, 
+  Search, 
+  Edit, 
+  Trash2, 
+  X 
+} from 'lucide-react';
 
-    <!-- Header Section -->
-    <header class="bg-slate-800 border-b border-slate-700 sticky top-0 z-30 shadow-lg no-print">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col sm:flex-row justify-between items-center gap-4">
-            <div class="flex items-center gap-3">
-                <div class="p-3 bg-blue-600 rounded-xl text-white shadow-lg shadow-blue-500/30">
-                    <i class="fa-solid fa-boxes-packing text-2xl"></i>
-                </div>
-                <div>
-                    <h1 class="text-2xl font-bold text-white tracking-wide">حركة المخزن (الوارد والصادر)</h1>
-                    <p class="text-xs text-slate-400">سجل إدخال وإخراج المواد، الفحص الفني، والتصدير</p>
-                </div>
-            </div>
-            
-            <div class="flex flex-wrap items-center gap-2">
-                <button onclick="openModal()" class="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-4 py-2.5 rounded-xl transition duration-200 flex items-center gap-2 shadow-lg shadow-emerald-600/20 active:scale-95">
-                    <i class="fa-solid fa-plus-circle"></i>
-                    <span>تسجيل حركة جديدة</span>
-                </button>
-                <button onclick="exportToCSV()" class="bg-slate-700 hover:bg-slate-600 text-slate-200 font-semibold px-4 py-2.5 rounded-xl transition duration-200 flex items-center gap-2 border border-slate-600 active:scale-95">
-                    <i class="fa-solid fa-file-excel text-emerald-400"></i>
-                    <span>تصدير CSV</span>
-                </button>
-                <button onclick="window.print()" class="bg-slate-700 hover:bg-slate-600 text-slate-200 font-semibold px-4 py-2.5 rounded-xl transition duration-200 flex items-center gap-2 border border-slate-600 active:scale-95">
-                    <i class="fa-solid fa-print text-blue-400"></i>
-                    <span>طباعة التقرير</span>
-                </button>
-            </div>
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+interface Movement {
+  id: string;
+  date: string;
+  type: 'IN' | 'OUT';
+  item_name: string;
+  quantity: number;
+  unit: string;
+  doc_number?: string;
+  qc_status?: string;
+  notes?: string;
+}
+
+export default function InventoryMovements() {
+  const [movements, setMovements] = useState<Movement[]>([]);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [filterType, setFilterType] = useState<'ALL' | 'IN' | 'OUT'>('ALL');
+  
+  const [showModal, setShowModal] = useState<boolean>(false);
+  const [isEditing, setIsEditing] = useState<boolean>(false);
+  const [editId, setEditId] = useState<string>('');
+
+  const [formData, setFormData] = useState<Omit<Movement, 'id'>>({
+    date: new Date().toISOString().split('T')[0],
+    type: 'IN',
+    item_name: '',
+    quantity: 0,
+    unit: 'كجم',
+    doc_number: '',
+    qc_status: 'مقبول (مطابق)',
+    notes: ''
+  });
+
+  useEffect(() => {
+    fetchMovements();
+  }, []);
+
+  const fetchMovements = async () => {
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('inventory_movements')
+        .select('*')
+        .order('date', { ascending: false });
+
+      if (!error && data) {
+        setMovements(data as Movement[]);
+      } else {
+        const local = localStorage.getItem('app_inventory_movements');
+        if (local) setMovements(JSON.parse(local));
+      }
+    } catch {
+      const local = localStorage.getItem('app_inventory_movements');
+      if (local) setMovements(JSON.parse(local));
+    }
+    setLoading(false);
+  };
+
+  const saveToLocalAndDB = (updatedList: Movement[]) => {
+    setMovements(updatedList);
+    localStorage.setItem('app_inventory_movements', JSON.stringify(updatedList));
+  };
+
+  const openNewModal = (type: 'IN' | 'OUT') => {
+    setIsEditing(false);
+    setEditId('');
+    setFormData({
+      date: new Date().toISOString().split('T')[0],
+      type: type,
+      item_name: '',
+      quantity: 0,
+      unit: 'كجم',
+      doc_number: '',
+      qc_status: 'مقبول (مطابق)',
+      notes: ''
+    });
+    setShowModal(true);
+  };
+
+  const openEditModal = (item: Movement) => {
+    setIsEditing(true);
+    setEditId(item.id);
+    setFormData({
+      date: item.date,
+      type: item.type,
+      item_name: item.item_name,
+      quantity: item.quantity,
+      unit: item.unit,
+      doc_number: item.doc_number || '',
+      qc_status: item.qc_status || 'مقبول (مطابق)',
+      notes: item.notes || ''
+    });
+    setShowModal(true);
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (isEditing) {
+      await supabase
+        .from('inventory_movements')
+        .update(formData)
+        .eq('id', editId);
+
+      const updated = movements.map(m => m.id === editId ? { ...formData, id: editId } : m);
+      saveToLocalAndDB(updated);
+    } else {
+      const newId = Date.now().toString();
+      const newRecord: Movement = { id: newId, ...formData };
+      
+      await supabase.from('inventory_movements').insert([newRecord]);
+      saveToLocalAndDB([newRecord, ...movements]);
+    }
+
+    setShowModal(false);
+  };
+
+  const handleDelete = async (id: string, name: string) => {
+    if (window.confirm(`هل أنت متأكد من حذف حركة المادة "${name}"؟`)) {
+      await supabase.from('inventory_movements').delete().eq('id', id);
+      const updated = movements.filter(m => m.id !== id);
+      saveToLocalAndDB(updated);
+    }
+  };
+
+  const totalIn = movements.filter(m => m.type === 'IN').reduce((acc, curr) => acc + Number(curr.quantity), 0);
+  const totalOut = movements.filter(m => m.type === 'OUT').reduce((acc, curr) => acc + Number(curr.quantity), 0);
+  const netBalance = totalIn - totalOut;
+
+  const filteredMovements = movements.filter(m => {
+    const matchesFilter = filterType === 'ALL' || m.type === filterType;
+    const query = searchQuery.toLowerCase();
+    const matchesSearch = 
+      (m.item_name && m.item_name.toLowerCase().includes(query)) ||
+      (m.doc_number && m.doc_number.toLowerCase().includes(query)) ||
+      (m.notes && m.notes.toLowerCase().includes(query));
+    return matchesFilter && matchesSearch;
+  });
+
+  const exportToCSV = () => {
+    if (movements.length === 0) {
+      alert('لا توجد بيانات لتصديرها');
+      return;
+    }
+    let csv = '\uFEFFالتاريخ,نوع الحركة,اسم المادة,الكمية,الوحدة,رقم المستند,فحص الجودة,الملاحظات\n';
+    movements.forEach(m => {
+      csv += `${m.date},${m.type === 'IN' ? 'وارد' : 'صادر'},"${m.item_name}",${m.quantity},${m.unit},"${m.doc_number || ''}","${m.qc_status || ''}","${m.notes || ''}"\n`;
+    });
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `حركة_المخزن_${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+  };
+
+  return (
+    <div dir="rtl" className="p-6 bg-slate-50 min-h-screen font-sans">
+      {/* Header */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900">حركة المخزون</h1>
+          <p className="text-sm text-slate-500 mt-1">تسجيل الوارد والصادر ومتابعة الأرصدة وفحوصات الجودة.</p>
         </div>
-    </header>
 
-    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
+        <div className="flex flex-wrap items-center gap-2">
+          <button 
+            onClick={() => openNewModal('IN')}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 shadow-sm transition"
+          >
+            <ArrowDownLeft size={18} /> وارد جديد
+          </button>
+          <button 
+            onClick={() => openNewModal('OUT')}
+            className="bg-rose-600 hover:bg-rose-700 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 shadow-sm transition"
+          >
+            <ArrowUpRight size={18} /> صادر جديد
+          </button>
+          <button 
+            onClick={exportToCSV}
+            className="bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 px-3 py-2 rounded-lg font-medium flex items-center gap-2 transition"
+          >
+            <FileSpreadsheet size={18} className="text-emerald-600" /> CSV
+          </button>
+          <button 
+            onClick={() => window.print()}
+            className="bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 px-3 py-2 rounded-lg font-medium flex items-center gap-2 transition"
+          >
+            <Printer size={18} className="text-blue-600" /> طباعة
+          </button>
+        </div>
+      </div>
 
-        <!-- KPI Cards -->
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 mb-8 no-print">
-            <div class="bg-slate-800 border border-slate-700/60 rounded-2xl p-5 shadow-lg flex items-center justify-between">
-                <div>
-                    <p class="text-xs font-semibold text-slate-400 mb-1">إجمالي الوارد</p>
-                    <h3 id="stat-in" class="text-2xl font-extrabold text-emerald-400">0</h3>
-                </div>
-                <div class="w-12 h-12 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center text-xl">
-                    <i class="fa-solid fa-arrow-down-left"></i>
-                </div>
-            </div>
-
-            <div class="bg-slate-800 border border-slate-700/60 rounded-2xl p-5 shadow-lg flex items-center justify-between">
-                <div>
-                    <p class="text-xs font-semibold text-slate-400 mb-1">إجمالي الصادر</p>
-                    <h3 id="stat-out" class="text-2xl font-extrabold text-rose-400">0</h3>
-                </div>
-                <div class="w-12 h-12 rounded-xl bg-rose-500/10 text-rose-400 flex items-center justify-center text-xl">
-                    <i class="fa-solid fa-arrow-up-right"></i>
-                </div>
-            </div>
-
-            <div class="bg-slate-800 border border-slate-700/60 rounded-2xl p-5 shadow-lg flex items-center justify-between">
-                <div>
-                    <p class="text-xs font-semibold text-slate-400 mb-1">صافي الحركة</p>
-                    <h3 id="stat-net" class="text-2xl font-extrabold text-blue-400">0</h3>
-                </div>
-                <div class="w-12 h-12 rounded-xl bg-blue-500/10 text-blue-400 flex items-center justify-center text-xl">
-                    <i class="fa-solid fa-scale-balanced"></i>
-                </div>
-            </div>
-
-            <div class="bg-slate-800 border border-slate-700/60 rounded-2xl p-5 shadow-lg flex items-center justify-between">
-                <div>
-                    <p class="text-xs font-semibold text-slate-400 mb-1">عدد الحركات المسجلة</p>
-                    <h3 id="stat-count" class="text-2xl font-extrabold text-purple-400">0</h3>
-                </div>
-                <div class="w-12 h-12 rounded-xl bg-purple-500/10 text-purple-400 flex items-center justify-center text-xl">
-                    <i class="fa-solid fa-list-check"></i>
-                </div>
-            </div>
+      {/* KPI Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex justify-between items-center">
+          <div>
+            <p className="text-xs text-slate-500 font-semibold mb-1">إجمالي الوارد</p>
+            <p className="text-xl font-bold text-emerald-600">{totalIn.toLocaleString()} <span className="text-xs font-normal">وحدة</span></p>
+          </div>
+          <div className="p-3 bg-emerald-50 rounded-lg text-emerald-600"><ArrowDownLeft size={22} /></div>
         </div>
 
-        <!-- Filter & Search Section -->
-        <div class="bg-slate-800 border border-slate-700/60 rounded-2xl p-4 mb-6 no-print flex flex-col md:flex-row justify-between items-center gap-4">
-            <div class="relative w-full md:w-96">
-                <i class="fa-solid fa-magnifying-glass absolute right-3.5 top-3.5 text-slate-400"></i>
-                <input type="text" id="searchInput" oninput="renderTable()" placeholder="ابحث باسم المادة، رقم المستند، أو الملاحظات..." class="w-full bg-slate-900 border border-slate-700 text-slate-200 text-sm rounded-xl pr-10 pl-4 py-2.5 focus:outline-none focus:border-blue-500 transition">
-            </div>
-
-            <div class="flex items-center gap-2 w-full md:w-auto overflow-x-auto pb-1 md:pb-0">
-                <button onclick="setFilter('ALL')" id="filter-ALL" class="filter-btn px-4 py-2 rounded-xl text-xs font-semibold transition bg-blue-600 text-white">الكل</button>
-                <button onclick="setFilter('IN')" id="filter-IN" class="filter-btn px-4 py-2 rounded-xl text-xs font-semibold transition bg-slate-700 text-slate-300 hover:bg-slate-600">الوارد فقط</button>
-                <button onclick="setFilter('OUT')" id="filter-OUT" class="filter-btn px-4 py-2 rounded-xl text-xs font-semibold transition bg-slate-700 text-slate-300 hover:bg-slate-600">الصادر فقط</button>
-            </div>
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex justify-between items-center">
+          <div>
+            <p className="text-xs text-slate-500 font-semibold mb-1">إجمالي الصادر</p>
+            <p className="text-xl font-bold text-rose-600">{totalOut.toLocaleString()} <span className="text-xs font-normal">وحدة</span></p>
+          </div>
+          <div className="p-3 bg-rose-50 rounded-lg text-rose-600"><ArrowUpRight size={22} /></div>
         </div>
 
-        <!-- Table Printable Header (Visible only in Print) -->
-        <div class="print-only mb-6 text-center">
-            <h2 class="text-2xl font-bold border-b pb-2">تقرير حركة المخزن (الوارد والصادر)</h2>
-            <p class="text-sm text-gray-600 mt-1">تاريخ الاستخراج: <span id="printDate"></span></p>
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex justify-between items-center">
+          <div>
+            <p className="text-xs text-slate-500 font-semibold mb-1">صافي حركة الرصيد</p>
+            <p className="text-xl font-bold text-blue-600">{netBalance.toLocaleString()} <span className="text-xs font-normal">وحدة</span></p>
+          </div>
+          <div className="p-3 bg-blue-50 rounded-lg text-blue-600"><Scale size={22} /></div>
         </div>
 
-        <!-- Movements Table -->
-        <div class="bg-slate-800 border border-slate-700/60 rounded-2xl shadow-xl overflow-hidden shadow-custom">
-            <div class="overflow-x-auto">
-                <table class="w-full text-right text-sm">
-                    <thead class="bg-slate-900/80 text-slate-400 border-b border-slate-700 uppercase font-semibold">
-                        <tr>
-                            <th class="py-4 px-4 text-center">#</th>
-                            <th class="py-4 px-4">التاريخ والوقت</th>
-                            <th class="py-4 px-4">نوع الحركة</th>
-                            <th class="py-4 px-4">اسم المادة</th>
-                            <th class="py-4 px-4 text-center">الكمية والوحدة</th>
-                            <th class="py-4 px-4">رقم الإذن / المستند</th>
-                            <th class="py-4 px-4">حالة الفحص (QC)</th>
-                            <th class="py-4 px-4">الملاحظات</th>
-                            <th class="py-4 px-4 text-center no-print">الإجراءات</th>
-                        </tr>
-                    </thead>
-                    <tbody id="movementsTable" class="divide-y divide-slate-700/50">
-                        <!-- Table Rows Rendered via JS -->
-                    </tbody>
-                </table>
-            </div>
-
-            <!-- Empty State -->
-            <div id="emptyState" class="hidden text-center py-12">
-                <i class="fa-solid fa-box-open text-5xl text-slate-600 mb-3"></i>
-                <p class="text-slate-400 font-medium">لا توجد حركات مخزنية مطابقة للبحث</p>
-            </div>
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex justify-between items-center">
+          <div>
+            <p className="text-xs text-slate-500 font-semibold mb-1">إجمالي الحركات</p>
+            <p className="text-xl font-bold text-purple-600">{movements.length} <span className="text-xs font-normal">عملية</span></p>
+          </div>
+          <div className="p-3 bg-purple-50 rounded-lg text-purple-600"><ListCheck size={22} /></div>
         </div>
-    </main>
+      </div>
 
-    <!-- Modal Form (Add / Edit) -->
-    <div id="movementModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center hidden p-4 no-print">
-        <div class="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden transform transition-all">
-            <div class="bg-slate-900 px-6 py-4 border-b border-slate-700 flex justify-between items-center">
-                <h3 id="modalTitle" class="text-lg font-bold text-white">تسجيل حركة مخزنية جديدة</h3>
-                <button onclick="closeModal()" class="text-slate-400 hover:text-white transition">
-                    <i class="fa-solid fa-xmark text-xl"></i>
-                </button>
-            </div>
-
-            <form id="movementForm" onsubmit="handleFormSubmit(event)" class="p-6 space-y-4">
-                <input type="hidden" id="editIndex">
-
-                <div class="grid grid-cols-2 gap-4">
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-300 mb-1">نوع الحركة <span class="text-rose-500">*</span></label>
-                        <select id="type" required class="w-full bg-slate-900 border border-slate-700 text-slate-100 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
-                            <option value="IN">وارد (إدخال مخزني)</option>
-                            <option value="OUT">صادر (صرف للإنتاج)</option>
-                        </select>
-                    </div>
-
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-300 mb-1">التاريخ <span class="text-rose-500">*</span></label>
-                        <input type="date" id="date" required class="w-full bg-slate-900 border border-slate-700 text-slate-100 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
-                    </div>
-                </div>
-
-                <div>
-                    <label class="block text-xs font-semibold text-slate-300 mb-1">اسم المادة / المنتج <span class="text-rose-500">*</span></label>
-                    <input type="text" id="itemName" required placeholder="مثال: ألومنيوم 9.5 ملم / حبيبات PVC" class="w-full bg-slate-900 border border-slate-700 text-slate-100 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
-                </div>
-
-                <div class="grid grid-cols-2 gap-4">
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-300 mb-1">الكمية <span class="text-rose-500">*</span></label>
-                        <input type="number" step="0.01" id="quantity" required placeholder="0.00" class="w-full bg-slate-900 border border-slate-700 text-slate-100 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
-                    </div>
-
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-300 mb-1">وحدة القياس <span class="text-rose-500">*</span></label>
-                        <select id="unit" required class="w-full bg-slate-900 border border-slate-700 text-slate-100 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
-                            <option value="كجم">كجم (Kilogram)</option>
-                            <option value="متر">متر (Meter)</option>
-                            <option value="طن">طن (Ton)</option>
-                            <option value="بكرة">بكرة (Reel)</option>
-                            <option value="قطعة">قطعة (Piece)</option>
-                        </select>
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-2 gap-4">
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-300 mb-1">رقم المستند / الإذن</label>
-                        <input type="text" id="docNumber" placeholder="REC-2026-001" class="w-full bg-slate-900 border border-slate-700 text-slate-100 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
-                    </div>
-
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-300 mb-1">حالة الفحص (QC)</label>
-                        <select id="qcStatus" class="w-full bg-slate-900 border border-slate-700 text-slate-100 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
-                            <option value="مقبول (مطابق)">مقبول (مطابق)</option>
-                            <option value="قيد الفحص">قيد الفحص</option>
-                            <option value="مرفوض">مرفوض</option>
-                            <option value="غير مطلوب">غير مطلوب</option>
-                        </select>
-                    </div>
-                </div>
-
-                <div>
-                    <label class="block text-xs font-semibold text-slate-300 mb-1">ملاحظات إضافية</label>
-                    <textarea id="notes" rows="2" placeholder="أدخل تفاصيل إضافية إن وجدت..." class="w-full bg-slate-900 border border-slate-700 text-slate-100 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-500"></textarea>
-                </div>
-
-                <div class="pt-2 flex justify-end gap-3">
-                    <button type="button" onclick="closeModal()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-semibold rounded-xl transition">إلغاء</button>
-                    <button type="submit" class="px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-xl shadow-lg shadow-blue-600/30 transition">حفظ الحركة</button>
-                </div>
-            </form>
+      {/* Search & Filters */}
+      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm mb-6 flex flex-col md:flex-row justify-between gap-4">
+        <div className="relative flex-1">
+          <Search size={18} className="absolute right-3 top-3 text-slate-400" />
+          <input 
+            type="text"
+            placeholder="ابحث باسم المادة، رقم المستند، أو الملاحظات..."
+            value={searchQuery}
+            onChange={e => setSearchQuery(e.target.value)}
+            className="w-full pr-10 pl-4 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+          />
         </div>
-    </div>
 
-    <!-- Script Logic -->
-    <script>
-        // Default Data if empty
-        const initialData = [
-            { id: 101, date: '2026-08-01', type: 'IN', itemName: 'سبيكة ألومنيوم 9.5 ملم', quantity: 2500, unit: 'كجم', docNumber: 'PO-9941', qcStatus: 'مقبول (مطابق)', notes: 'توريد دفعة جديدة من المورد' },
-            { id: 102, date: '2026-08-03', type: 'OUT', itemName: 'حبيبات PVC عزل', quantity: 450, unit: 'كجم', docNumber: 'ISS-1020', qcStatus: 'غير مطلوب', notes: 'صرف لخط الإنتاج رقم 2' },
-            { id: 103, date: '2026-08-05', type: 'IN', itemName: 'ستيل واير 35 ملم', quantity: 1200, unit: 'كجم', docNumber: 'PO-9950', qcStatus: 'قيد الفحص', notes: 'انتظار شهادة الفحص المختبري' }
-        ];
+        <div className="flex gap-2">
+          <button 
+            onClick={() => setFilterType('ALL')}
+            className={`px-4 py-2 text-xs font-bold rounded-lg transition ${filterType === 'ALL' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+          >
+            الكل
+          </button>
+          <button 
+            onClick={() => setFilterType('IN')}
+            className={`px-4 py-2 text-xs font-bold rounded-lg transition ${filterType === 'IN' ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+          >
+            الوارد فقط
+          </button>
+          <button 
+            onClick={() => setFilterType('OUT')}
+            className={`px-4 py-2 text-xs font-bold rounded-lg transition ${filterType === 'OUT' ? 'bg-rose-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+          >
+            الصادر فقط
+          </button>
+        </div>
+      </div>
 
-        let movements = JSON.parse(localStorage.getItem('inventory_movements')) || initialData;
-        let activeFilter = 'ALL';
-
-        function init() {
-            document.getElementById('date').valueAsDate = new Date();
-            document.getElementById('printDate').innerText = new Date().toLocaleDateString('ar-IQ');
-            renderTable();
-        }
-
-        function saveData() {
-            localStorage.setItem('inventory_movements', JSON.stringify(movements));
-            renderTable();
-        }
-
-        function calculateStats() {
-            let totalIn = 0;
-            let totalOut = 0;
-
-            movements.forEach(m => {
-                if(m.type === 'IN') totalIn += parseFloat(m.quantity);
-                if(m.type === 'OUT') totalOut += parseFloat(m.quantity);
-            });
-
-            document.getElementById('stat-in').innerText = totalIn.toLocaleString('ar-IQ') + ' وحدة';
-            document.getElementById('stat-out').innerText = totalOut.toLocaleString('ar-IQ') + ' وحدة';
-            document.getElementById('stat-net').innerText = (totalIn - totalOut).toLocaleString('ar-IQ') + ' وحدة';
-            document.getElementById('stat-count').innerText = movements.length;
-        }
-
-        function renderTable() {
-            calculateStats();
-            const tbody = document.getElementById('movementsTable');
-            const search = document.getElementById('searchInput').value.toLowerCase();
-            tbody.innerHTML = '';
-
-            const filtered = movements.filter(m => {
-                const matchesFilter = activeFilter === 'ALL' || m.type === activeFilter;
-                const matchesSearch = m.itemName.toLowerCase().includes(search) || 
-                                      m.docNumber.toLowerCase().includes(search) || 
-                                      (m.notes && m.notes.toLowerCase().includes(search));
-                return matchesFilter && matchesSearch;
-            });
-
-            if (filtered.length === 0) {
-                document.getElementById('emptyState').classList.remove('hidden');
-            } else {
-                document.getElementById('emptyState').classList.add('hidden');
-            }
-
-            filtered.forEach((m, index) => {
-                const tr = document.createElement('tr');
-                tr.className = "hover:bg-slate-700/30 transition border-b border-slate-700/50";
-
-                const isIN = m.type === 'IN';
-                const typeBadge = isIN 
-                    ? `<span class="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-xs font-bold px-2.5 py-1 rounded-lg inline-flex items-center gap-1"><i class="fa-solid fa-arrow-down"></i> وارد</span>`
-                    : `<span class="bg-rose-500/10 text-rose-400 border border-rose-500/20 text-xs font-bold px-2.5 py-1 rounded-lg inline-flex items-center gap-1"><i class="fa-solid fa-arrow-up"></i> صادر</span>`;
-
-                let qcBadgeClass = 'bg-slate-700 text-slate-300';
-                if(m.qcStatus === 'مقبول (مطابق)') qcBadgeClass = 'bg-emerald-900/40 text-emerald-300 border border-emerald-700/50';
-                if(m.qcStatus === 'قيد الفحص') qcBadgeClass = 'bg-amber-900/40 text-amber-300 border border-amber-700/50';
-                if(m.qcStatus === 'مرفوض') qcBadgeClass = 'bg-rose-900/40 text-rose-300 border border-rose-700/50';
-
-                tr.innerHTML = `
-                    <td class="py-3 px-4 text-center text-slate-400 font-mono text-xs">#${m.id}</td>
-                    <td class="py-3 px-4 text-slate-300 font-medium">${m.date}</td>
-                    <td class="py-3 px-4">${typeBadge}</td>
-                    <td class="py-3 px-4 font-semibold text-white">${m.itemName}</td>
-                    <td class="py-3 px-4 text-center font-bold text-slate-100">${Number(m.quantity).toLocaleString()} <span class="text-xs font-normal text-slate-400">${m.unit}</span></td>
-                    <td class="py-3 px-4 text-slate-300 font-mono text-xs">${m.docNumber || '-'}</td>
-                    <td class="py-3 px-4"><span class="text-xs px-2.5 py-1 rounded-md font-semibold ${qcBadgeClass}">${m.qcStatus}</span></td>
-                    <td class="py-3 px-4 text-slate-400 text-xs max-w-xs truncate">${m.notes || '-'}</td>
-                    <td class="py-3 px-4 text-center no-print">
-                        <div class="flex items-center justify-center gap-2">
-                            <button onclick="editMovement(${m.id})" title="تعديل" class="p-1.5 bg-slate-700 hover:bg-blue-600 text-slate-300 hover:text-white rounded-lg transition">
-                                <i class="fa-solid fa-pen-to-square"></i>
-                            </button>
-                            <button onclick="deleteMovement(${m.id})" title="حذف" class="p-1.5 bg-slate-700 hover:bg-rose-600 text-slate-300 hover:text-white rounded-lg transition">
-                                <i class="fa-solid fa-trash-can"></i>
-                            </button>
-                        </div>
+      {/* Movements Table */}
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-right text-sm">
+            <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold">
+              <tr>
+                <th className="p-3">التاريخ</th>
+                <th className="p-3">نوع الحركة</th>
+                <th className="p-3">اسم المادة</th>
+                <th className="p-3 text-center">الكمية</th>
+                <th className="p-3">رقم المستند / الإذن</th>
+                <th className="p-3">فحص الجودة (QC)</th>
+                <th className="p-3">الملاحظات</th>
+                <th className="p-3 text-center">الإجراءات</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {loading ? (
+                <tr><td colSpan={8} className="p-8 text-center text-slate-400">جاري تحميل الحركات المخزنية...</td></tr>
+              ) : filteredMovements.length === 0 ? (
+                <tr><td colSpan={8} className="p-8 text-center text-slate-400">لا توجد حركات مخزنية مطابقة للبحث</td></tr>
+              ) : (
+                filteredMovements.map(m => (
+                  <tr key={m.id} className="hover:bg-slate-50/80 transition">
+                    <td className="p-3 text-slate-600 font-mono text-xs">{m.date}</td>
+                    <td className="p-3">
+                      {m.type === 'IN' ? (
+                        <span className="inline-flex items-center gap-1 bg-emerald-100 text-emerald-800 text-xs px-2 py-0.5 rounded font-semibold">
+                          <ArrowDownLeft size={14} /> وارد
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 bg-rose-100 text-rose-800 text-xs px-2 py-0.5 rounded font-semibold">
+                          <ArrowUpRight size={14} /> صادر
+                        </span>
+                      )}
                     </td>
-                `;
-                tbody.appendChild(tr);
-            });
-        }
+                    <td className="p-3 font-bold text-slate-800">{m.item_name}</td>
+                    <td className="p-3 text-center font-bold text-slate-900">
+                      {Number(m.quantity).toLocaleString()} <span className="text-xs text-slate-500 font-normal">{m.unit}</span>
+                    </td>
+                    <td className="p-3 text-slate-600 font-mono text-xs">{m.doc_number || '-'}</td>
+                    <td className="p-3">
+                      <span className="text-xs px-2 py-0.5 rounded font-medium bg-slate-100 text-slate-700 border border-slate-200">
+                        {m.qc_status}
+                      </span>
+                    </td>
+                    <td className="p-3 text-slate-500 text-xs max-w-xs truncate">{m.notes || '-'}</td>
+                    <td className="p-3 text-center">
+                      <div className="flex items-center justify-center gap-1">
+                        <button 
+                          onClick={() => openEditModal(m)} 
+                          className="p-1.5 text-blue-600 hover:bg-blue-50 rounded transition"
+                          title="تعديل"
+                        >
+                          <Edit size={16} />
+                        </button>
+                        <button 
+                          onClick={() => handleDelete(m.id, m.item_name)} 
+                          className="p-1.5 text-rose-600 hover:bg-rose-50 rounded transition"
+                          title="حذف"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
 
-        function setFilter(type) {
-            activeFilter = type;
-            document.querySelectorAll('.filter-btn').forEach(btn => {
-                btn.className = 'filter-btn px-4 py-2 rounded-xl text-xs font-semibold transition bg-slate-700 text-slate-300 hover:bg-slate-600';
-            });
-            document.getElementById(`filter-${type}`).className = 'filter-btn px-4 py-2 rounded-xl text-xs font-semibold transition bg-blue-600 text-white';
-            renderTable();
-        }
+      {/* Modal Form */}
+      {showModal && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6">
+            <div className="flex justify-between items-center border-b pb-3 mb-4">
+              <h3 className="text-lg font-bold text-slate-800">
+                {isEditing ? 'تعديل حركة مخزنية' : formData.type === 'IN' ? 'تسجيل حركة وارد جديد' : 'تسجيل حركة صادر جديد'}
+              </h3>
+              <button onClick={() => setShowModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X size={20} />
+              </button>
+            </div>
 
-        function openModal(isEdit = false) {
-            document.getElementById('movementModal').classList.remove('hidden');
-            if(!isEdit) {
-                document.getElementById('movementForm').reset();
-                document.getElementById('editIndex').value = '';
-                document.getElementById('modalTitle').innerText = 'تسجيل حركة مخزنية جديدة';
-                document.getElementById('date').valueAsDate = new Date();
-            }
-        }
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">نوع الحركة *</label>
+                  <select 
+                    value={formData.type}
+                    onChange={e => setFormData({ ...formData, type: e.target.value as 'IN' | 'OUT' })}
+                    className="w-full border border-slate-300 rounded-lg p-2 text-sm bg-white"
+                  >
+                    <option value="IN">وارد (إدخال للمخزن)</option>
+                    <option value="OUT">صادر (صرف للإنتاج)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">التاريخ *</label>
+                  <input 
+                    type="date"
+                    required
+                    value={formData.date}
+                    onChange={e => setFormData({ ...formData, date: e.target.value })}
+                    className="w-full border border-slate-300 rounded-lg p-2 text-sm"
+                  />
+                </div>
+              </div>
 
-        function closeModal() {
-            document.getElementById('movementModal').classList.add('hidden');
-        }
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-1">اسم المادة / المنتج *</label>
+                <input 
+                  type="text"
+                  required
+                  placeholder="مثال: سلك نحاس 8 ملم / سبيكة ألومنيوم"
+                  value={formData.item_name}
+                  onChange={e => setFormData({ ...formData, item_name: e.target.value })}
+                  className="w-full border border-slate-300 rounded-lg p-2 text-sm"
+                />
+              </div>
 
-        function handleFormSubmit(e) {
-            e.preventDefault();
-            const editId = document.getElementById('editIndex').value;
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">الكمية *</label>
+                  <input 
+                    type="number"
+                    step="0.001"
+                    required
+                    placeholder="0"
+                    value={formData.quantity}
+                    onChange={e => setFormData({ ...formData, quantity: Number(e.target.value) })}
+                    className="w-full border border-slate-300 rounded-lg p-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">وحدة القياس *</label>
+                  <input 
+                    type="text"
+                    required
+                    placeholder="كجم، متر، طن..."
+                    value={formData.unit}
+                    onChange={e => setFormData({ ...formData, unit: e.target.value })}
+                    className="w-full border border-slate-300 rounded-lg p-2 text-sm"
+                  />
+                </div>
+              </div>
 
-            const movementData = {
-                id: editId ? parseInt(editId) : Date.now(),
-                type: document.getElementById('type').value,
-                date: document.getElementById('date').value,
-                itemName: document.getElementById('itemName').value,
-                quantity: parseFloat(document.getElementById('quantity').value),
-                unit: document.getElementById('unit').value,
-                docNumber: document.getElementById('docNumber').value,
-                qcStatus: document.getElementById('qcStatus').value,
-                notes: document.getElementById('notes').value
-            };
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">رقم المستند / الإذن</label>
+                  <input 
+                    type="text"
+                    placeholder="مثال: REC-102"
+                    value={formData.doc_number}
+                    onChange={e => setFormData({ ...formData, doc_number: e.target.value })}
+                    className="w-full border border-slate-300 rounded-lg p-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">حالة الفحص (QC)</label>
+                  <select 
+                    value={formData.qc_status}
+                    onChange={e => setFormData({ ...formData, qc_status: e.target.value })}
+                    className="w-full border border-slate-300 rounded-lg p-2 text-sm bg-white"
+                  >
+                    <option value="مقبول (مطابق)">مقبول (مطابق)</option>
+                    <option value="قيد الفحص">قيد الفحص</option>
+                    <option value="مرفوض">مرفوض</option>
+                    <option value="غير مطلوب">غير مطلوب</option>
+                  </select>
+                </div>
+              </div>
 
-            if (editId) {
-                const idx = movements.findIndex(m => m.id == editId);
-                if (idx !== -1) movements[idx] = movementData;
-            } else {
-                movements.unshift(movementData);
-            }
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-1">ملاحظات</label>
+                <textarea 
+                  rows={2}
+                  placeholder="أي تفاصيل إضافية..."
+                  value={formData.notes}
+                  onChange={e => setFormData({ ...formData, notes: e.target.value })}
+                  className="w-full border border-slate-300 rounded-lg p-2 text-sm"
+                />
+              </div>
 
-            saveData();
-            closeModal();
-        }
-
-        function editMovement(id) {
-            const item = movements.find(m => m.id === id);
-            if (!item) return;
-
-            document.getElementById('editIndex').value = item.id;
-            document.getElementById('type').value = item.type;
-            document.getElementById('date').value = item.date;
-            document.getElementById('itemName').value = item.itemName;
-            document.getElementById('quantity').value = item.quantity;
-            document.getElementById('unit').value = item.unit;
-            document.getElementById('docNumber').value = item.docNumber;
-            document.getElementById('qcStatus').value = item.qcStatus;
-            document.getElementById('notes').value = item.notes;
-
-            document.getElementById('modalTitle').innerText = 'تعديل الحركة المخزنية';
-            openModal(true);
-        }
-
-        function deleteMovement(id) {
-            if (confirm('هل أنت تأكد من إزالة هذه الحركة من السجل؟')) {
-                movements = movements.filter(m => m.id !== id);
-                saveData();
-            }
-        }
-
-        // Export functionality to Excel / CSV with UTF-8 BOM
-        function exportToCSV() {
-            if(movements.length === 0) {
-                alert('لا توجد بيانات لتصديرها');
-                return;
-            }
-
-            let csvContent = "\uFEFF"; // BOM for UTF-8 Excel support
-            csvContent += "المعرف,التاريخ,نوع الحركة,اسم المادة,الكمية,الوحدة,رقم المستند,حالة الفحص,الملاحظات\n";
-
-            movements.forEach(m => {
-                const typeText = m.type === 'IN' ? 'وارد' : 'صادر';
-                const row = [
-                    m.id,
-                    m.date,
-                    typeText,
-                    `"${m.itemName}"`,
-                    m.quantity,
-                    m.unit,
-                    `"${m.docNumber || ''}"`,
-                    `"${m.qcStatus}"`,
-                    `"${m.notes || ''}"`
-                ].join(",");
-                csvContent += row + "\n";
-            });
-
-            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement("a");
-            link.setAttribute("href", url);
-            link.setAttribute("download", `حركة_المخزن_${new Date().toISOString().slice(0,10)}.csv`);
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-        }
-
-        // Run on Page Load
-        init();
-    </script>
-</body>
-</html>
+              <div className="flex justify-end gap-2 border-t pt-4">
+                <button 
+                  type="button" 
+                  onClick={() => setShowModal(false)}
+                  className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg"
+                >
+                  إلغاء
+                </button>
+                <button 
+                  type="submit"
+                  className="px-4 py-2 text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-lg shadow-sm"
+                >
+                  {isEditing ? 'حفظ التعديلات' : 'تسجيل الحركة'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
