@@ -1,535 +1,560 @@
-import { useEffect, useState, useCallback } from 'react';
-import { Factory, Plus, Play, CheckCircle2, Trash2, Package, AlertTriangle, Download, Printer, Search } from 'lucide-react';
-import { supabase, ProductionOrder, Item, ProductionMaterial, ProductionScrap, ProductionOutput, OrderStatus } from '@/lib/supabase';
-import { fmtMoney, fmtNum, fmtDate, fmtDateTime } from '@/lib/format';
-import { exportToCSV, printHTML } from '@/lib/csv';
-import { Badge, Button, Modal, Field, Input, Select, Textarea, Spinner, PageHeader, EmptyState } from '@/components/ui';
+import React, { useState, useEffect } from 'react';
+import { createClient } from '@supabase/supabase-js';
+import { 
+  Factory, 
+  Plus, 
+  Trash2, 
+  Layers, 
+  ClipboardList, 
+  CheckCircle2, 
+  AlertCircle, 
+  X,
+  Settings,
+  Clock,
+  DollarSign,
+  Save,
+  Play
+} from 'lucide-react';
 
-interface FullOrder extends ProductionOrder {
-  materials: (ProductionMaterial & { items: { name: string; unit: string } | null })[];
-  scrap: (ProductionScrap & { items: { name: string; unit: string } | null })[];
-  outputs: (ProductionOutput & { items: { name: string; unit: string } | null })[];
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+interface BOMItem {
+  material_name: string;
+  quantity_per_meter: number; // الكمية لكل 1 متر
+  unit: string;
+  waste_percent: number; // نسبة الهدر %
 }
 
-const STATUS_LABEL: Record<OrderStatus, string> = { pending: 'قيد الانتظار', in_progress: 'قيد التنفيذ', completed: 'مكتمل' };
-const STATUS_BADGE: Record<OrderStatus, 'amber' | 'blue' | 'green'> = { pending: 'amber', in_progress: 'blue', completed: 'green' };
+interface BOM {
+  id: string;
+  product_name: string;
+  product_code: string;
+  unit: string; // دائماً سيكون "متر" للكابلات
+  items: BOMItem[];
+}
+
+interface TreeItem {
+  id: string;
+  name: string;
+  code: string;
+  type: string;
+  unit: string;
+}
+
+interface Movement {
+  item_name: string;
+  type: 'IN' | 'OUT';
+  quantity: number;
+}
 
 export default function Production() {
-  const [orders, setOrders] = useState<FullOrder[]>([]);
-  const [items, setItems] = useState<Item[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
-  const [statusFilter, setStatusFilter] = useState('');
-  const [createOpen, setCreateOpen] = useState(false);
-  const [detail, setDetail] = useState<FullOrder | null>(null);
+  const [activeTab, setActiveTab] = useState<'ORDERS' | 'BOM'>('ORDERS');
+  
+  // Data States
+  const [boms, setBoms] = useState<BOM[]>([]);
+  const [treeItems, setTreeItems] = useState<TreeItem[]>([]);
+  const [movements, setMovements] = useState<Movement[]>([]);
+  
+  // BOM Modal State
+  const [showBomModal, setShowBomModal] = useState<boolean>(false);
+  const [selectedProduct, setSelectedProduct] = useState<string>('');
+  const [selectedMaterialsList, setSelectedMaterialsList] = useState<string[]>([]);
+  const [bomItemsConfig, setBomItemsConfig] = useState<BOMItem[]>([]);
+  const [bomStep, setBomStep] = useState<1 | 2>(1);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    const [po, it] = await Promise.all([
-      supabase.from('production_orders').select('*').order('created_at', { ascending: false }),
-      supabase.from('items').select('*').order('name'),
-    ]);
-    const orderList = (po.data as ProductionOrder[]) || [];
-    const ids = orderList.map((o) => o.id);
-    let mats: (ProductionMaterial & { items: { name: string; unit: string } | null })[] = [];
-    let scrap: (ProductionScrap & { items: { name: string; unit: string } | null })[] = [];
-    let outs: (ProductionOutput & { items: { name: string; unit: string } | null })[] = [];
-    if (ids.length) {
-      const [m, s, o] = await Promise.all([
-        supabase.from('production_materials').select('*, items(name,unit)').in('order_id', ids),
-        supabase.from('production_scrap').select('*, items(name,unit)').in('order_id', ids),
-        supabase.from('production_outputs').select('*, items(name,unit)').in('order_id', ids),
-      ]);
-      mats = (m.data as any) || [];
-      scrap = (s.data as any) || [];
-      outs = (o.data as any) || [];
-    }
-    const full: FullOrder[] = orderList.map((o) => ({
-      ...o,
-      materials: mats.filter((x) => x.order_id === o.id),
-      scrap: scrap.filter((x) => x.order_id === o.id),
-      outputs: outs.filter((x) => x.order_id === o.id),
-    }));
-    setOrders(full);
-    setItems((it.data as Item[]) || []);
-    setLoading(false);
+  // Production Order State
+  const [orderNumber, setOrderNumber] = useState<string>('');
+  const [selectedBomId, setSelectedBomId] = useState<string>('');
+  const [targetQuantity, setTargetQuantity] = useState<number>(5000); // Default 5000m
+
+  useEffect(() => {
+    fetchInitialData();
+    generateOrderNumber();
   }, []);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  const generateOrderNumber = () => {
+    const dateStr = new Date().toISOString().slice(0,10).replace(/-/g, '');
+    const randomNum = Math.floor(100 + Math.random() * 900);
+    setOrderNumber(`PROD-${dateStr}-${randomNum}`);
+  };
 
-  const filtered = orders.filter((o) => {
-    if (statusFilter && o.status !== statusFilter) return false;
-    if (search) return o.order_number.toLowerCase().includes(search.toLowerCase()) || o.product_name.toLowerCase().includes(search.toLowerCase());
-    return true;
+  const fetchInitialData = async () => {
+    // الوصفات
+    const localBoms = localStorage.getItem('app_boms');
+    if (localBoms) setBoms(JSON.parse(localBoms));
+
+    // شجرة المواد
+    try {
+      const { data: tData } = await supabase.from('inventory_tree').select('*').eq('is_active', true);
+      if (tData) setTreeItems(tData as TreeItem[]);
+    } catch {
+      // Fallback
+    }
+
+    // الحركات لحساب الرصيد
+    try {
+      const { data: mData } = await supabase.from('inventory_movements').select('*');
+      if (mData) setMovements(mData as Movement[]);
+      else {
+        const localM = localStorage.getItem('app_inventory_movements');
+        if (localM) setMovements(JSON.parse(localM));
+      }
+    } catch {
+      const localM = localStorage.getItem('app_inventory_movements');
+      if (localM) setMovements(JSON.parse(localM));
+    }
+  };
+
+  const saveBoms = (updated: BOM[]) => {
+    setBoms(updated);
+    localStorage.setItem('app_boms', JSON.stringify(updated));
+  };
+
+  // حساب الرصيد المتوفر لمادة معينة من المخزن
+  const getStock = (itemName: string) => {
+    const itemIn = movements.filter(m => m.item_name === itemName && m.type === 'IN').reduce((a, c) => a + Number(c.quantity), 0);
+    const itemOut = movements.filter(m => m.item_name === itemName && m.type === 'OUT').reduce((a, c) => a + Number(c.quantity), 0);
+    return itemIn - itemOut;
+  };
+
+  // --- دوال التحكم بوصفة التصنيع المتقدمة ---
+  const toggleMaterialSelection = (materialName: string) => {
+    if (selectedMaterialsList.includes(materialName)) {
+      setSelectedMaterialsList(prev => prev.filter(m => m !== materialName));
+    } else {
+      setSelectedMaterialsList(prev => [...prev, materialName]);
+    }
+  };
+
+  const proceedToBomFormula = () => {
+    if (!selectedProduct) return alert('الرجاء اختيار المنتج المراد تصنيعه');
+    if (selectedMaterialsList.length === 0) return alert('الرجاء اختيار مادة خام واحدة على الأقل');
+
+    // تجهيز جدول المعادلات بناءً على التحديد المتعدد
+    const initialConfig = selectedMaterialsList.map(matName => {
+      const found = treeItems.find(t => t.name === matName);
+      return {
+        material_name: matName,
+        quantity_per_meter: 0,
+        unit: found ? found.unit : 'كجم',
+        waste_percent: 1.5 // افتراضي
+      };
+    });
+    setBomItemsConfig(initialConfig);
+    setBomStep(2);
+  };
+
+  const handleSaveBom = () => {
+    // التحقق من القيم
+    const hasZero = bomItemsConfig.some(item => item.quantity_per_meter <= 0);
+    if (hasZero) return alert('الرجاء إدخال كميات صحيحة أكبر من صفر لكل المواد');
+
+    const foundProd = treeItems.find(t => t.name === selectedProduct);
+    const newBom: BOM = {
+      id: Date.now().toString(),
+      product_name: selectedProduct,
+      product_code: foundProd ? foundProd.code : `PRD-${Date.now().toString().slice(-4)}`,
+      unit: 'متر', // القياسي للمصنع
+      items: bomItemsConfig
+    };
+
+    saveBoms([newBom, ...boms.filter(b => b.product_name !== selectedProduct)]);
+    setShowBomModal(false);
+    resetBomModal();
+  };
+
+  const resetBomModal = () => {
+    setBomStep(1);
+    setSelectedProduct('');
+    setSelectedMaterialsList([]);
+    setBomItemsConfig([]);
+  };
+
+  const handleDeleteBom = (id: string) => {
+    if (window.confirm('هل أنت متأكد من حذف هذه الوصفة؟')) {
+      saveBoms(boms.filter(b => b.id !== id));
+    }
+  };
+
+  const selectedBomForCalc = boms.find(b => b.id === selectedBomId);
+  
+  // فحص هل المخزون يكفي للبدء بالإنتاج؟
+  const canProduce = selectedBomForCalc?.items.every(item => {
+    const grossNeeded = (item.quantity_per_meter * targetQuantity) * (1 + (item.waste_percent / 100));
+    return getStock(item.material_name) >= grossNeeded;
   });
 
-  const startOrder = async (o: FullOrder) => {
-    if (o.materials.length === 0) {
-      alert('أضف المواد المطلوبة قبل بدء الإنتاج');
-      return;
-    }
-    await supabase.from('production_orders').update({ status: 'in_progress', started_at: new Date().toISOString() }).eq('id', o.id);
-    load();
-  };
-
-  const deleteOrder = async (o: FullOrder) => {
-    if (o.status !== 'pending') {
-      alert('لا يمكن حذف أمر إنتاج بدأ أو اكتمل');
-      return;
-    }
-    if (!confirm(`حذف أمر الإنتاج "${o.order_number}"؟`)) return;
-    await supabase.from('production_orders').delete().eq('id', o.id);
-    load();
-  };
-
-  const exportData = () => {
-    exportToCSV(
-      'أوامر_الإنتاج',
-      ['رقم الأمر', 'المنتج', 'الحالة', 'الكمية المخططة', 'إجمالي التكلفة', 'تكلفة الوحدة', 'تاريخ البدء', 'تاريخ الإكمال'],
-      filtered.map((o) => [
-        o.order_number,
-        o.product_name,
-        STATUS_LABEL[o.status],
-        fmtNum(o.planned_qty, 3),
-        fmtMoney(o.total_cost),
-        fmtMoney(o.unit_cost),
-        fmtDateTime(o.started_at),
-        fmtDateTime(o.completed_at),
-      ])
-    );
-  };
-
   return (
-    <>
-      <PageHeader
-        title="الإنتاج"
-        subtitle="أوامر إنتاج · تخصيص مواد · هدر · إخراج تام"
-        action={
-          <div className="flex gap-2">
-            <Button variant="secondary" size="sm" onClick={exportData}><Download size={16} /> CSV</Button>
-            <Button size="sm" onClick={() => setCreateOpen(true)}><Plus size={16} /> أمر إنتاج جديد</Button>
-          </div>
-        }
-      />
+    <div dir="rtl" className="p-6 bg-slate-50 min-h-screen font-sans">
+      {/* Header */}
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
+            <Factory className="text-blue-600" /> إدارة الإنتاج الذكية
+          </h1>
+          <p className="text-sm text-slate-500 mt-1">تخطيط أوامر الإنتاج، حساب استهلاك المواد الفوري، وهندسة الوصفات التصنيعية.</p>
+        </div>
 
-      <div className="bg-white rounded-2xl ring-1 ring-ink-200 shadow-sm p-4 mb-4">
-        <div className="flex flex-wrap gap-3">
-          <div className="relative flex-1 min-w-[200px]">
-            <Search size={17} className="absolute right-3 top-1/2 -translate-y-1/2 text-ink-400" />
-            <Input placeholder="بحث برقم الأمر أو المنتج..." value={search} onChange={(e) => setSearch(e.target.value)} className="pr-10" />
-          </div>
-          <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="w-auto">
-            <option value="">كل الحالات</option>
-            <option value="pending">قيد الانتظار</option>
-            <option value="in_progress">قيد التنفيذ</option>
-            <option value="completed">مكتمل</option>
-          </Select>
+        {/* Navigation Tabs */}
+        <div className="flex bg-slate-200 p-1 rounded-xl">
+          <button 
+            onClick={() => setActiveTab('ORDERS')}
+            className={`px-4 py-2 rounded-lg text-sm font-bold transition flex items-center gap-2 ${activeTab === 'ORDERS' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600'}`}
+          >
+            <ClipboardList size={18} /> أوامر الإنتاج
+          </button>
+          <button 
+            onClick={() => setActiveTab('BOM')}
+            className={`px-4 py-2 rounded-lg text-sm font-bold transition flex items-center gap-2 ${activeTab === 'BOM' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600'}`}
+          >
+            <Layers size={18} /> وصفات التصنيع (BOM)
+          </button>
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl ring-1 ring-ink-200 shadow-sm overflow-hidden">
-        {loading ? (
-          <Spinner />
-        ) : filtered.length === 0 ? (
-          <EmptyState icon={<Factory size={26} />} title="لا توجد أوامر إنتاج" hint="ابدأ بإنشاء أمر إنتاج جديد" />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-ink-800 text-ink-100 text-xs">
-                  <th className="px-4 py-3 text-right font-semibold">رقم الأمر</th>
-                  <th className="px-4 py-3 text-right font-semibold">المنتج</th>
-                  <th className="px-4 py-3 text-right font-semibold">الحالة</th>
-                  <th className="px-4 py-3 text-right font-semibold">الكمية</th>
-                  <th className="px-4 py-3 text-right font-semibold">المواد</th>
-                  <th className="px-4 py-3 text-right font-semibold">الهدر</th>
-                  <th className="px-4 py-3 text-right font-semibold">إجمالي التكلفة</th>
-                  <th className="px-4 py-3 text-right font-semibold">تكلفة الوحدة</th>
-                  <th className="px-4 py-3 text-right font-semibold">إجراءات</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-ink-100">
-                {filtered.map((o) => (
-                  <tr key={o.id} className="hover:bg-ink-50 transition cursor-pointer" onClick={() => setDetail(o)}>
-                    <td className="px-4 py-3 font-bold text-brand-700">{o.order_number}</td>
-                    <td className="px-4 py-3 font-medium text-ink-800">{o.product_name}</td>
-                    <td className="px-4 py-3"><Badge color={STATUS_BADGE[o.status]}>{STATUS_LABEL[o.status]}</Badge></td>
-                    <td className="px-4 py-3 text-ink-700">{fmtNum(o.planned_qty, 3)}</td>
-                    <td className="px-4 py-3 text-ink-600">{o.materials.length}</td>
-                    <td className="px-4 py-3 text-ink-600">{o.scrap.length}</td>
-                    <td className="px-4 py-3 font-semibold text-ink-800">{fmtMoney(o.total_cost)}</td>
-                    <td className="px-4 py-3 text-ink-600">{fmtMoney(o.unit_cost)}</td>
-                    <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                      <div className="flex items-center gap-1">
-                        {o.status === 'pending' && (
-                          <button onClick={() => startOrder(o)} className="p-1.5 rounded-lg text-brand-600 hover:bg-brand-50" title="بدء الإنتاج"><Play size={16} /></button>
-                        )}
-                        {o.status === 'pending' && (
-                          <button onClick={() => deleteOrder(o)} className="p-1.5 rounded-lg text-danger-600 hover:bg-danger-50" title="حذف"><Trash2 size={16} /></button>
-                        )}
-                        <button onClick={() => setDetail(o)} className="p-1.5 rounded-lg text-ink-500 hover:bg-ink-100" title="تفاصيل"><Package size={16} /></button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-
-      <CreateOrderModal open={createOpen} items={items} onClose={() => setCreateOpen(false)} onSaved={load} />
-      <OrderDetailModal order={detail} items={items} onClose={() => setDetail(null)} onSaved={load} />
-    </>
-  );
-}
-
-function CreateOrderModal({ open, items, onClose, onSaved }: { open: boolean; items: Item[]; onClose: () => void; onSaved: () => void }) {
-  const [form, setForm] = useState({ order_number: '', product_name: '', planned_qty: '1', notes: '' });
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    if (open) {
-      const num = `PRD-${new Date().getFullYear()}-${String(Math.floor(Math.random() * 9000) + 1000)}`;
-      setForm({ order_number: num, product_name: '', planned_qty: '1', notes: '' });
-      setError('');
-    }
-  }, [open]);
-
-  const save = async () => {
-    if (!form.order_number.trim() || !form.product_name.trim()) {
-      setError('رقم الأمر واسم المنتج مطلوبان');
-      return;
-    }
-    setSaving(true);
-    const { error: e } = await supabase.from('production_orders').insert({
-      order_number: form.order_number.trim(),
-      product_name: form.product_name.trim(),
-      planned_qty: parseFloat(form.planned_qty) || 1,
-      status: 'pending',
-      notes: form.notes.trim() || null,
-    });
-    setSaving(false);
-    if (e) {
-      setError(e.message);
-      return;
-    }
-    onClose();
-    onSaved();
-  };
-
-  return (
-    <Modal open={open} onClose={onClose} title="أمر إنتاج جديد" size="md">
-      <div className="space-y-4">
-        {error && <div className="bg-danger-50 text-danger-700 text-sm rounded-lg px-3 py-2 ring-1 ring-danger-500/20">{error}</div>}
-        <Field label="رقم الأمر" required>
-          <Input value={form.order_number} onChange={(e) => setForm({ ...form, order_number: e.target.value })} />
-        </Field>
-        <Field label="اسم المنتج" required>
-          <Input value={form.product_name} onChange={(e) => setForm({ ...form, product_name: e.target.value })} placeholder="مثال: كرسي مكتب موديل A" autoFocus />
-        </Field>
-        <Field label="الكمية المخططة">
-          <Input type="number" step="0.001" value={form.planned_qty} onChange={(e) => setForm({ ...form, planned_qty: e.target.value })} />
-        </Field>
-        <Field label="ملاحظات">
-          <Textarea rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
-        </Field>
-        <div className="flex justify-end gap-2 pt-2 border-t border-ink-100">
-          <Button variant="secondary" onClick={onClose}>إلغاء</Button>
-          <Button onClick={save} disabled={saving}>{saving ? 'جارٍ الحفظ...' : 'إنشاء الأمر'}</Button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-function OrderDetailModal({
-  order,
-  items,
-  onClose,
-  onSaved,
-}: {
-  order: FullOrder | null;
-  items: Item[];
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const [tab, setTab] = useState<'materials' | 'scrap' | 'outputs'>('materials');
-  const [matForm, setMatForm] = useState({ item_id: '', qty: '' });
-  const [scrapForm, setScrapForm] = useState({ item_id: '', qty: '', notes: '' });
-  const [outForm, setOutForm] = useState({ item_id: '', qty: '' });
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    if (order) {
-      setTab('materials');
-      setMatForm({ item_id: '', qty: '' });
-      setScrapForm({ item_id: '', qty: '', notes: '' });
-      setOutForm({ item_id: '', qty: '' });
-    }
-  }, [order]);
-
-  if (!order) return null;
-
-  const canEdit = order.status !== 'completed';
-
-  const addMaterial = async () => {
-    if (!matForm.item_id || !matForm.qty) return;
-    const it = items.find((i) => i.id === matForm.item_id)!;
-    const qty = parseFloat(matForm.qty);
-    if (qty > it.quantity_on_hand) {
-      alert(`الكمية المطلوبة (${fmtNum(qty, 3)}) أكبر من المخزون المتاح (${fmtNum(it.quantity_on_hand, 3)})`);
-      return;
-    }
-    setBusy(true);
-    // Create stock-out movement (deduct from inventory)
-    const { data: mv, error: mve } = await supabase.from('movements').insert({
-      item_id: it.id,
-      movement_type: 'out',
-      qty,
-      unit_cost: it.avg_unit_cost,
-      batch_lot: null,
-      destination: order.order_number,
-      production_order_id: order.id,
-      notes: `تخصيص للأمر ${order.order_number}`,
-      movement_date: new Date().toISOString().slice(0, 10),
-    }).select().single();
-    if (mve) {
-      alert(mve.message);
-      setBusy(false);
-      return;
-    }
-    await supabase.from('production_materials').insert({
-      order_id: order.id,
-      item_id: it.id,
-      qty,
-      unit_cost: it.avg_unit_cost,
-      movement_id: mv.id,
-    });
-    await recalcOrderCost(order.id);
-    setBusy(false);
-    setMatForm({ item_id: '', qty: '' });
-    onSaved();
-  };
-
-  const addScrap = async () => {
-    if (!scrapForm.item_id || !scrapForm.qty) return;
-    const it = items.find((i) => i.id === scrapForm.item_id)!;
-    const qty = parseFloat(scrapForm.qty);
-    setBusy(true);
-    await supabase.from('production_scrap').insert({
-      order_id: order.id,
-      item_id: it.id,
-      qty,
-      unit_cost: it.avg_unit_cost,
-      notes: scrapForm.notes.trim() || null,
-    });
-    await recalcOrderCost(order.id);
-    setBusy(false);
-    setScrapForm({ item_id: '', qty: '', notes: '' });
-    onSaved();
-  };
-
-  const completeOrder = async () => {
-    if (!outForm.item_id || !outForm.qty) {
-      alert('حدد الصنف التام والكمية المنتجة قبل الإكمال');
-      return;
-    }
-    if (!confirm('تأكيد إكمال أمر الإنتاج؟ سيتم إضافة المنتج التام للمخزون وحساب التكلفة النهائية.')) return;
-    setBusy(true);
-    const it = items.find((i) => i.id === outForm.item_id)!;
-    const outQty = parseFloat(outForm.qty);
-    // Recalculate final cost
-    const [mats, scrap] = await Promise.all([
-      supabase.from('production_materials').select('qty,unit_cost').eq('order_id', order.id),
-      supabase.from('production_scrap').select('qty,unit_cost').eq('order_id', order.id),
-    ]);
-    const matCost = ((mats.data as ProductionMaterial[]) || []).reduce((s, m) => s + m.qty * m.unit_cost, 0);
-    const scrapCost = ((scrap.data as ProductionScrap[]) || []).reduce((s, m) => s + m.qty * m.unit_cost, 0);
-    const totalCost = matCost + scrapCost;
-    const unitCost = outQty > 0 ? totalCost / outQty : 0;
-
-    // Push finished goods into inventory (stock-in movement)
-    const { data: mv, error: mve } = await supabase.from('movements').insert({
-      item_id: it.id,
-      movement_type: 'in',
-      qty: outQty,
-      unit_cost: unitCost,
-      batch_lot: order.order_number,
-      supplier: `إنتاج داخلي - ${order.order_number}`,
-      production_order_id: order.id,
-      notes: `إخراج من الإنتاج ${order.order_number}`,
-      movement_date: new Date().toISOString().slice(0, 10),
-    }).select().single();
-    if (mve) {
-      alert(mve.message);
-      setBusy(false);
-      return;
-    }
-    await supabase.from('production_outputs').insert({
-      order_id: order.id,
-      item_id: it.id,
-      qty: outQty,
-      unit_cost: unitCost,
-      movement_id: mv.id,
-    });
-    await supabase.from('production_orders').update({
-      status: 'completed',
-      total_cost: totalCost,
-      unit_cost: unitCost,
-      completed_at: new Date().toISOString(),
-    }).eq('id', order.id);
-    setBusy(false);
-    onClose();
-    onSaved();
-  };
-
-  const matCost = order.materials.reduce((s, m) => s + m.qty * m.unit_cost, 0);
-  const scrapCost = order.scrap.reduce((s, m) => s + m.qty * m.unit_cost, 0);
-
-  return (
-    <Modal open={!!order} onClose={onClose} title={`أمر إنتاج: ${order.order_number}`} size="xl">
-      <div className="space-y-4">
-        {/* Header info */}
-        <div className="flex flex-wrap items-center gap-3 bg-ink-50 rounded-xl px-4 py-3">
-          <div><p className="text-xs text-ink-500">المنتج</p><p className="font-semibold text-ink-800">{order.product_name}</p></div>
-          <div className="w-px h-8 bg-ink-200" />
-          <div><p className="text-xs text-ink-500">الحالة</p><Badge color={STATUS_BADGE[order.status]}>{STATUS_LABEL[order.status]}</Badge></div>
-          <div className="w-px h-8 bg-ink-200" />
-          <div><p className="text-xs text-ink-500">الكمية المخططة</p><p className="font-semibold text-ink-800">{fmtNum(order.planned_qty, 3)}</p></div>
-          <div className="w-px h-8 bg-ink-200" />
-          <div><p className="text-xs text-ink-500">تكلفة المواد</p><p className="font-semibold text-ink-800">{fmtMoney(matCost)}</p></div>
-          <div><p className="text-xs text-ink-500">تكلفة الهدر</p><p className="font-semibold text-danger-600">{fmtMoney(scrapCost)}</p></div>
-          <div className="w-px h-8 bg-ink-200" />
-          <div><p className="text-xs text-ink-500">الإجمالي</p><p className="font-bold text-brand-700">{fmtMoney(matCost + scrapCost)}</p></div>
-        </div>
-
-        {/* Tabs */}
-        <div className="flex gap-1 border-b border-ink-200">
-          {([
-            { id: 'materials', label: `المواد المخصصة (${order.materials.length})` },
-            { id: 'scrap', label: `الهدر (${order.scrap.length})` },
-            { id: 'outputs', label: `الإخراج التام (${order.outputs.length})` },
-          ] as const).map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`px-4 py-2 text-sm font-semibold border-b-2 transition ${
-                tab === t.id ? 'border-brand-600 text-brand-700' : 'border-transparent text-ink-500 hover:text-ink-700'
-              }`}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Materials tab */}
-        {tab === 'materials' && (
-          <div className="space-y-3">
-            {canEdit && (
-              <div className="flex gap-2 bg-ink-50 rounded-lg p-3">
-                <Select value={matForm.item_id} onChange={(e) => setMatForm({ ...matForm, item_id: e.target.value })} className="flex-1">
-                  <option value="">— اختر مادة —</option>
-                  {items.filter((i) => i.item_type !== 'finished').map((i) => (
-                    <option key={i.id} value={i.id}>{i.name} (متاح: {fmtNum(i.quantity_on_hand, 3)} {i.unit})</option>
-                  ))}
-                </Select>
-                <Input type="number" step="0.001" placeholder="الكمية" value={matForm.qty} onChange={(e) => setMatForm({ ...matForm, qty: e.target.value })} className="w-32" />
-                <Button size="sm" onClick={addMaterial} disabled={busy}><Plus size={15} /> إضافة</Button>
+      {/* Tab 1: Production Orders (Advanced) */}
+      {activeTab === 'ORDERS' && (
+        <div className="space-y-6">
+          {/* Order Configuration Card */}
+          <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+            <div className="flex justify-between items-center mb-5 border-b pb-4">
+              <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                <Settings className="text-blue-600" size={20} /> إعداد أمر إنتاج جديد
+              </h2>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-bold text-slate-500">رقم الأمر:</span>
+                <input 
+                  type="text" 
+                  value={orderNumber}
+                  onChange={(e) => setOrderNumber(e.target.value)}
+                  className="bg-slate-100 border-none rounded-lg px-3 py-1.5 text-sm font-mono font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 w-48"
+                />
               </div>
-            )}
-            {order.materials.length === 0 ? (
-              <p className="text-sm text-ink-400 text-center py-6">لم يتم تخصيص مواد بعد</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead><tr className="text-ink-500 text-xs"><th className="px-3 py-2 text-right">المادة</th><th className="px-3 py-2 text-right">الكمية</th><th className="px-3 py-2 text-right">التكلفة/وحدة</th><th className="px-3 py-2 text-right">الإجمالي</th></tr></thead>
-                <tbody className="divide-y divide-ink-100">
-                  {order.materials.map((m) => (
-                    <tr key={m.id}><td className="px-3 py-2 text-ink-800">{m.items?.name}</td><td className="px-3 py-2">{fmtNum(m.qty, 3)} {m.items?.unit}</td><td className="px-3 py-2">{fmtMoney(m.unit_cost)}</td><td className="px-3 py-2 font-semibold">{fmtMoney(m.qty * m.unit_cost)}</td></tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        )}
+            </div>
 
-        {/* Scrap tab */}
-        {tab === 'scrap' && (
-          <div className="space-y-3">
-            {canEdit && (
-              <div className="flex gap-2 bg-ink-50 rounded-lg p-3">
-                <Select value={scrapForm.item_id} onChange={(e) => setScrapForm({ ...scrapForm, item_id: e.target.value })} className="flex-1">
-                  <option value="">— اختر مادة —</option>
-                  {items.map((i) => (<option key={i.id} value={i.id}>{i.name}</option>))}
-                </Select>
-                <Input type="number" step="0.001" placeholder="الكمية" value={scrapForm.qty} onChange={(e) => setScrapForm({ ...scrapForm, qty: e.target.value })} className="w-32" />
-                <Input placeholder="سبب الهدر" value={scrapForm.notes} onChange={(e) => setScrapForm({ ...scrapForm, notes: e.target.value })} className="flex-1" />
-                <Button size="sm" variant="danger" onClick={addScrap} disabled={busy}><Plus size={15} /> إضافة</Button>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-50 p-5 rounded-xl border border-slate-200">
+              <div>
+                <label className="block text-sm font-bold text-slate-700 mb-2">المنتج المراد تصنيعه (من الوصفات المعتمدة)</label>
+                <select 
+                  value={selectedBomId}
+                  onChange={e => setSelectedBomId(e.target.value)}
+                  className="w-full border border-slate-300 rounded-lg p-3 text-sm bg-white font-bold text-slate-800 shadow-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                >
+                  <option value="">-- يرجى اختيار المنتج / الوصفة --</option>
+                  {boms.map(b => (
+                    <option key={b.id} value={b.id}>{b.product_name} [{b.product_code}]</option>
+                  ))}
+                </select>
               </div>
-            )}
-            {order.scrap.length === 0 ? (
-              <p className="text-sm text-ink-400 text-center py-6">لا يوجد هدر مسجل</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead><tr className="text-ink-500 text-xs"><th className="px-3 py-2 text-right">المادة</th><th className="px-3 py-2 text-right">الكمية</th><th className="px-3 py-2 text-right">التكلفة</th><th className="px-3 py-2 text-right">السبب</th></tr></thead>
-                <tbody className="divide-y divide-ink-100">
-                  {order.scrap.map((s) => (
-                    <tr key={s.id}><td className="px-3 py-2 text-ink-800">{s.items?.name}</td><td className="px-3 py-2 text-danger-600 font-semibold">{fmtNum(s.qty, 3)} {s.items?.unit}</td><td className="px-3 py-2">{fmtMoney(s.qty * s.unit_cost)}</td><td className="px-3 py-2 text-ink-500">{s.notes || '—'}</td></tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        )}
 
-        {/* Outputs / complete tab */}
-        {tab === 'outputs' && (
-          <div className="space-y-3">
-            {order.outputs.length > 0 && (
-              <table className="w-full text-sm">
-                <thead><tr className="text-ink-500 text-xs"><th className="px-3 py-2 text-right">المنتج التام</th><th className="px-3 py-2 text-right">الكمية</th><th className="px-3 py-2 text-right">تكلفة الوحدة</th><th className="px-3 py-2 text-right">الإجمالي</th></tr></thead>
-                <tbody className="divide-y divide-ink-100">
-                  {order.outputs.map((o) => (
-                    <tr key={o.id}><td className="px-3 py-2 text-ink-800">{o.items?.name}</td><td className="px-3 py-2 font-semibold">{fmtNum(o.qty, 3)} {o.items?.unit}</td><td className="px-3 py-2">{fmtMoney(o.unit_cost)}</td><td className="px-3 py-2 font-semibold text-success-700">{fmtMoney(o.qty * o.unit_cost)}</td></tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-            {canEdit && order.status === 'in_progress' && (
-              <div className="bg-success-50 rounded-xl p-4 ring-1 ring-success-500/20">
-                <p className="text-sm font-semibold text-success-700 mb-3 flex items-center gap-1.5"><CheckCircle2 size={16} /> إكمال الإنتاج</p>
-                <div className="flex gap-2">
-                  <Select value={outForm.item_id} onChange={(e) => setOutForm({ ...outForm, item_id: e.target.value })} className="flex-1">
-                    <option value="">— اختر المنتج التام —</option>
-                    {items.filter((i) => i.item_type === 'finished').map((i) => (<option key={i.id} value={i.id}>{i.name}</option>))}
-                  </Select>
-                  <Input type="number" step="0.001" placeholder="الكمية المنتجة" value={outForm.qty} onChange={(e) => setOutForm({ ...outForm, qty: e.target.value })} className="w-40" />
-                  <Button variant="success" onClick={completeOrder} disabled={busy}><CheckCircle2 size={16} /> إكمال</Button>
+              <div>
+                <label className="block text-sm font-bold text-slate-700 mb-2">الكمية المستهدفة (بالمتر)</label>
+                <div className="relative">
+                  <input 
+                    type="number"
+                    min="1"
+                    value={targetQuantity}
+                    onChange={e => setTargetQuantity(Number(e.target.value))}
+                    className="w-full border border-slate-300 rounded-lg p-3 text-lg font-bold text-blue-700 shadow-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
+                  />
+                  <span className="absolute left-3 top-3.5 text-sm font-bold text-slate-400">متر (m)</span>
                 </div>
-                <p className="text-xs text-ink-500 mt-2">سيتم حساب التكلفة النهائية (مواد + هدر) وإضافة المنتج التام للمخزون تلقائياً.</p>
               </div>
-            )}
-            {order.status === 'pending' && (
-              <div className="bg-warning-50 rounded-lg px-4 py-3 text-sm text-warning-600 flex items-center gap-2">
-                <AlertTriangle size={16} /> يجب بدء الإنتاج أولاً قبل الإكمال
-              </div>
-            )}
+            </div>
           </div>
-        )}
-      </div>
-    </Modal>
-  );
-}
 
-async function recalcOrderCost(orderId: string) {
-  const [mats, scrap] = await Promise.all([
-    supabase.from('production_materials').select('qty,unit_cost').eq('order_id', orderId),
-    supabase.from('production_scrap').select('qty,unit_cost').eq('order_id', orderId),
-  ]);
-  const matCost = ((mats.data as ProductionMaterial[]) || []).reduce((s, m) => s + m.qty * m.unit_cost, 0);
-  const scrapCost = ((scrap.data as ProductionScrap[]) || []).reduce((s, m) => s + m.qty * m.unit_cost, 0);
-  await supabase.from('production_orders').update({ total_cost: matCost + scrapCost }).eq('id', orderId);
+          {/* Live Stock Collision & Analysis */}
+          {selectedBomForCalc && (
+            <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+               <div className="flex justify-between items-center mb-4">
+                  <h3 className="font-bold text-slate-800 text-lg">
+                    تحليل المواد لإنتاج <span className="text-blue-600">{targetQuantity.toLocaleString()} متر</span> من {selectedBomForCalc.product_name}
+                  </h3>
+                  
+                  {/* Future Integrations Badges */}
+                  <div className="flex gap-3">
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-slate-100 text-slate-500 rounded-lg text-xs font-bold" title="قريباً: ربط بقسم الحسابات">
+                      <DollarSign size={14} /> التكلفة: جاري الحساب..
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-slate-100 text-slate-500 rounded-lg text-xs font-bold" title="قريباً: حساب زمن المكائن">
+                      <Clock size={14} /> الزمن: جاري الحساب..
+                    </span>
+                  </div>
+               </div>
+
+              <div className="overflow-x-auto rounded-xl border border-slate-200 shadow-sm">
+                <table className="w-full text-right text-sm">
+                  <thead className="bg-slate-800 text-white">
+                    <tr>
+                      <th className="p-4 font-semibold">المادة الأولية</th>
+                      <th className="p-4 text-center font-semibold text-slate-300">المعادلة (للمتر الواحد)</th>
+                      <th className="p-4 text-center font-semibold">المطلوب الصافي</th>
+                      <th className="p-4 text-center font-semibold text-amber-300">الإجمالي (مع الهدر)</th>
+                      <th className="p-4 text-center font-semibold">متوفر في المخزن</th>
+                      <th className="p-4 text-center font-semibold">حالة الرصيد</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {selectedBomForCalc.items.map((item, idx) => {
+                      const netNeeded = item.quantity_per_meter * targetQuantity;
+                      const grossNeeded = netNeeded * (1 + (item.waste_percent / 100));
+                      const stockAvailable = getStock(item.material_name);
+                      const isSufficient = stockAvailable >= grossNeeded;
+                      const deficit = grossNeeded - stockAvailable;
+
+                      return (
+                        <tr key={idx} className="hover:bg-slate-50 transition">
+                          <td className="p-4 font-bold text-slate-800">{item.material_name}</td>
+                          <td className="p-4 text-center font-mono text-xs text-slate-500">{item.quantity_per_meter} {item.unit}</td>
+                          <td className="p-4 text-center font-bold text-slate-700">{netNeeded.toLocaleString(undefined, {maximumFractionDigits: 2})} {item.unit}</td>
+                          <td className="p-4 text-center font-bold text-amber-600 bg-amber-50/50">{grossNeeded.toLocaleString(undefined, {maximumFractionDigits: 2})} {item.unit}</td>
+                          <td className="p-4 text-center font-mono font-bold text-slate-700">{stockAvailable.toLocaleString(undefined, {maximumFractionDigits: 2})} {item.unit}</td>
+                          <td className="p-4 text-center">
+                            {isSufficient ? (
+                              <span className="inline-flex items-center gap-1.5 bg-emerald-100 text-emerald-700 px-3 py-1.5 rounded-lg text-xs font-bold border border-emerald-200">
+                                <CheckCircle2 size={16} /> رصيد كافٍ
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1.5 bg-rose-100 text-rose-700 px-3 py-1.5 rounded-lg text-xs font-bold border border-rose-200 shadow-sm animate-pulse">
+                                <AlertCircle size={16} /> عجز ({deficit.toLocaleString(undefined, {maximumFractionDigits: 2})} {item.unit})
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Action Button */}
+              <div className="mt-6 flex justify-end">
+                <button 
+                  disabled={!canProduce}
+                  className={`px-8 py-3 rounded-xl font-bold text-lg flex items-center gap-2 shadow-lg transition-all ${canProduce ? 'bg-blue-600 hover:bg-blue-700 text-white hover:scale-105' : 'bg-slate-300 text-slate-500 cursor-not-allowed'}`}
+                >
+                  <Play size={20} fill="currentColor" />
+                  {canProduce ? 'تأكيد وبدء الإنتاج (سحب من المخزن)' : 'المخزون لا يكفي للإنتاج'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Tab 2: BOM Management */}
+      {activeTab === 'BOM' && (
+        <div>
+          <div className="flex justify-between items-center mb-6">
+            <div>
+              <h2 className="text-xl font-bold text-slate-800">وصفات ومعادلات التصنيع المعتمدة</h2>
+              <p className="text-sm text-slate-500 mt-1">إعداد المقادير المعيارية لإنتاج متر واحد من كل كابل.</p>
+            </div>
+            <button 
+              onClick={() => {
+                resetBomModal();
+                setShowBomModal(true);
+              }}
+              className="bg-slate-800 hover:bg-slate-900 text-white px-5 py-2.5 rounded-xl font-bold flex items-center gap-2 shadow-md transition"
+            >
+              <Plus size={20} /> إنشاء وصفة تصنيع جديدة
+            </button>
+          </div>
+
+          {boms.length === 0 ? (
+            <div className="bg-white p-12 text-center rounded-2xl border border-dashed border-slate-300">
+              <div className="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <Layers size={32} className="text-slate-400" />
+              </div>
+              <h3 className="text-lg font-bold text-slate-700 mb-1">لا توجد وصفات تصنيع بعد</h3>
+              <p className="text-sm text-slate-500">قم ببناء هندسة المنتجات لتمكين النظام من حساب الاحتياجات تلقائياً.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {boms.map(bom => (
+                <div key={bom.id} className="bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition overflow-hidden">
+                  <div className="bg-slate-800 p-4 flex justify-between items-center">
+                    <div>
+                      <h3 className="font-bold text-white text-lg">{bom.product_name}</h3>
+                      <p className="text-xs text-slate-300 font-mono mt-1">الكود: {bom.product_code} | القياس الأساسي: 1 {bom.unit}</p>
+                    </div>
+                    <button 
+                      onClick={() => handleDeleteBom(bom.id)} 
+                      className="text-rose-400 hover:text-white hover:bg-rose-500 p-2 rounded-lg transition"
+                      title="حذف الوصفة"
+                    >
+                      <Trash2 size={18} />
+                    </button>
+                  </div>
+
+                  <div className="p-5">
+                    <p className="text-xs font-bold text-slate-500 mb-3 uppercase tracking-wider">مقادير المتر الواحد:</p>
+                    <div className="space-y-3">
+                      {bom.items.map((item, idx) => (
+                        <div key={idx} className="flex justify-between items-center bg-slate-50 p-3 rounded-xl border border-slate-100">
+                          <span className="font-bold text-slate-700 text-sm flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full bg-blue-500"></div>
+                            {item.material_name}
+                          </span>
+                          <div className="text-right">
+                            <div className="font-mono font-bold text-blue-700 text-sm">
+                              {item.quantity_per_meter} {item.unit}
+                            </div>
+                            <div className="text-[10px] font-bold text-slate-400 mt-0.5">هدر: {item.waste_percent}%</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Modern BOM Multi-Step Modal */}
+      {showBomModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh]">
+            
+            {/* Modal Header */}
+            <div className="bg-slate-800 p-5 flex justify-between items-center shrink-0">
+              <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                <Settings className="text-blue-400" /> 
+                {bomStep === 1 ? 'الخطوة 1: تحديد المنتج والمواد الخام' : 'الخطوة 2: هندسة مقادير المتر الواحد'}
+              </h3>
+              <button onClick={() => setShowBomModal(false)} className="text-slate-400 hover:text-white transition">
+                <X size={24} />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 overflow-y-auto grow">
+              
+              {/* STEP 1: Selection */}
+              {bomStep === 1 && (
+                <div className="space-y-6">
+                  <div>
+                    <label className="block text-sm font-bold text-slate-700 mb-2">المنتج المراد بناء وصفة له (المنتج التام)</label>
+                    <select 
+                      value={selectedProduct}
+                      onChange={e => setSelectedProduct(e.target.value)}
+                      className="w-full border-2 border-slate-200 rounded-xl p-3 text-sm bg-slate-50 font-bold text-blue-700 focus:border-blue-500 focus:bg-white outline-none transition"
+                    >
+                      <option value="">-- اختر من قائمة المنتجات --</option>
+                      {treeItems.map(item => (
+                        <option key={item.id} value={item.name}>{item.name} [{item.code}]</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-bold text-slate-700 mb-3 border-b pb-2">حدد جميع المواد الأولية المطلوبة لصناعة هذا الكابل (Multi-Select)</label>
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                      {treeItems.map(item => (
+                        <div 
+                          key={item.id}
+                          onClick={() => toggleMaterialSelection(item.name)}
+                          className={`p-3 rounded-xl border-2 cursor-pointer transition-all flex items-center gap-3 ${
+                            selectedMaterialsList.includes(item.name) 
+                            ? 'border-blue-500 bg-blue-50 shadow-sm' 
+                            : 'border-slate-200 bg-white hover:border-slate-300'
+                          }`}
+                        >
+                          <div className={`w-5 h-5 rounded flex items-center justify-center shrink-0 ${
+                            selectedMaterialsList.includes(item.name) ? 'bg-blue-500 text-white' : 'bg-slate-200'
+                          }`}>
+                            {selectedMaterialsList.includes(item.name) && <CheckCircle2 size={14} />}
+                          </div>
+                          <div className="text-sm font-bold text-slate-700 leading-tight">{item.name}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* STEP 2: Formulation */}
+              {bomStep === 2 && (
+                <div className="space-y-5">
+                  <div className="bg-blue-50 text-blue-800 p-4 rounded-xl border border-blue-100 flex items-start gap-3">
+                    <AlertCircle className="shrink-0 mt-0.5" size={20} />
+                    <p className="text-sm font-semibold">
+                      أدخل الكمية المطلوبة بالوحدة المحددة لإنتاج <strong className="text-lg">متر واحد (1m)</strong> فقط من {selectedProduct}. <br/>
+                      (ملاحظة: للبكرات الخشبية، إذا كانت البكرة تتسع لـ 1000 متر، أدخل الكمية 0.001)
+                    </p>
+                  </div>
+
+                  <div className="space-y-3">
+                    {bomItemsConfig.map((item, index) => (
+                      <div key={index} className="grid grid-cols-12 gap-4 items-center bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                        <div className="col-span-12 md:col-span-5">
+                          <div className="font-bold text-slate-800">{item.material_name}</div>
+                          <div className="text-xs text-slate-400 font-mono mt-1">وحدة القياس: {item.unit}</div>
+                        </div>
+
+                        <div className="col-span-6 md:col-span-4">
+                          <label className="text-xs font-bold text-slate-500 block mb-1">الكمية لكل 1 متر</label>
+                          <input 
+                            type="number"
+                            step="0.0001"
+                            value={item.quantity_per_meter || ''}
+                            onChange={e => {
+                              const updated = [...bomItemsConfig];
+                              updated[index].quantity_per_meter = Number(e.target.value);
+                              setBomItemsConfig(updated);
+                            }}
+                            className="w-full border-2 border-slate-200 rounded-lg p-2 text-sm font-bold text-blue-700 outline-none focus:border-blue-500 text-center"
+                            placeholder="مثال: 0.850"
+                          />
+                        </div>
+
+                        <div className="col-span-6 md:col-span-3">
+                          <label className="text-xs font-bold text-slate-500 block mb-1">نسبة الهدر %</label>
+                          <input 
+                            type="number"
+                            step="0.1"
+                            value={item.waste_percent}
+                            onChange={e => {
+                              const updated = [...bomItemsConfig];
+                              updated[index].waste_percent = Number(e.target.value);
+                              setBomItemsConfig(updated);
+                            }}
+                            className="w-full border-2 border-slate-200 rounded-lg p-2 text-sm font-bold text-amber-600 outline-none focus:border-amber-500 text-center"
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="bg-slate-50 p-5 border-t border-slate-200 flex justify-between shrink-0">
+              {bomStep === 1 ? (
+                <>
+                  <button onClick={() => setShowBomModal(false)} className="px-5 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-200 rounded-xl transition">إلغاء</button>
+                  <button onClick={proceedToBomFormula} className="px-6 py-2.5 text-sm font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-md transition flex items-center gap-2">
+                    التالي: هندسة المقادير
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button onClick={() => setBomStep(1)} className="px-5 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-200 rounded-xl transition">رجوع</button>
+                  <button onClick={handleSaveBom} className="px-6 py-2.5 text-sm font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-md transition flex items-center gap-2">
+                    <Save size={18} /> حفظ واعتماد الوصفة
+                  </button>
+                </>
+              )}
+            </div>
+
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
