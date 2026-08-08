@@ -1,415 +1,348 @@
-import { useEffect, useState, useCallback } from 'react';
-import { ChevronLeft, ChevronDown, Folder, FolderOpen, Plus, Package, Pencil, Trash2, Search, MapPin, Layers } from 'lucide-react';
-import { supabase, Category, Item, ItemType } from '@/lib/supabase';
-import { fmtMoney, fmtNum } from '@/lib/format';
-import { Badge, Button, Modal, Field, Input, Select, Textarea, Spinner, PageHeader, EmptyState } from '@/components/ui';
+import React, { useState, useEffect } from 'react';
+import { createClient } from '@supabase/supabase-js';
+import { 
+  FolderTree, Plus, ChevronRight, ChevronDown, Package, 
+  Layers, ShieldAlert 
+} from 'lucide-react';
 
-interface TreeNode extends Category {
-  children: TreeNode[];
-  items: Item[];
-  expanded: boolean;
+// تكييف رابط Supabase والـ Key مع متغيرات مشروعك البيئية
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+interface InventoryItem {
+  id: string;
+  code: string;
+  name: string;
+  type: 'category' | 'raw_material' | 'finished_product' | 'spare_part' | 'consumable' | 'service';
+  unit: string;
+  parent_id: string | null;
+  qc_required: boolean;
+  min_stock: number;
+  cost_price: number;
+  is_active: boolean;
 }
 
-const TYPE_LABEL: Record<ItemType, string> = { raw: 'مادة خام', semi: 'نصف مصنّع', finished: 'تام الصنع' };
-const TYPE_BADGE: Record<ItemType, 'amber' | 'blue' | 'green'> = { raw: 'amber', semi: 'blue', finished: 'green' };
-
 export default function InventoryTree() {
-  const [tree, setTree] = useState<TreeNode[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
-  const [catModal, setCatModal] = useState<{ open: boolean; parent: Category | null; edit: Category | null }>({ open: false, parent: null, edit: null });
-  const [itemModal, setItemModal] = useState<{ open: boolean; category: Category | null; edit: Item | null }>({ open: false, category: null, edit: null });
+  const [items, setItems] = useState<InventoryItem[]>([]);
+  const [expandedNodes, setExpandedNodes] = useState<Record<string, boolean>>({});
+  const [loading, setLoading] = useState<boolean>(true);
+  const [showModal, setShowModal] = useState<boolean>(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    const [cats, items] = await Promise.all([
-      supabase.from('categories').select('*').order('sort_order'),
-      supabase.from('items').select('*').order('name'),
-    ]);
-    const catList = (cats.data as Category[]) || [];
-    const itemList = (items.data as Item[]) || [];
-    const map = new Map<string, TreeNode>();
-    catList.forEach((c) => map.set(c.id, { ...c, children: [], items: [], expanded: true }));
-    const roots: TreeNode[] = [];
-    catList.forEach((c) => {
-      const node = map.get(c.id)!;
-      if (c.parent_id && map.has(c.parent_id)) {
-        map.get(c.parent_id)!.children.push(node);
-      } else {
-        roots.push(node);
-      }
-    });
-    itemList.forEach((it) => {
-      if (it.category_id && map.has(it.category_id)) {
-        map.get(it.category_id)!.items.push(it);
-      }
-    });
-    setTree(roots);
-    setLoading(false);
-  }, []);
+  // نموذج الإضافة الجديد
+  const [newItem, setNewItem] = useState({
+    code: '',
+    name: '',
+    type: 'raw_material',
+    unit: 'كجم',
+    parent_id: '',
+    qc_required: false,
+    min_stock: 0,
+    cost_price: 0
+  });
 
   useEffect(() => {
-    load();
-  }, [load]);
+    fetchTreeData();
+  }, []);
 
-  const toggle = (id: string) => {
-    setTree((prev) => {
-      const toggleNode = (nodes: TreeNode[]): TreeNode[] =>
-        nodes.map((n) => {
-          if (n.id === id) return { ...n, expanded: !n.expanded };
-          if (n.children.length) return { ...n, children: toggleNode(n.children) };
-          return n;
-        });
-      return toggleNode(prev);
+  const fetchTreeData = async () => {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from('inventory_tree')
+      .select('*')
+      .eq('is_active', true)
+      .order('code', { ascending: true });
+
+    if (!error && data) {
+      setItems(data);
+    }
+    setLoading(false);
+  };
+
+  const toggleNode = (id: string) => {
+    setExpandedNodes(prev => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const handleAddItem = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const payload = {
+      ...newItem,
+      parent_id: newItem.parent_id === '' ? null : newItem.parent_id
+    };
+
+    const { error } = await supabase.from('inventory_tree').insert([payload]);
+
+    if (!error) {
+      setShowModal(false);
+      fetchTreeData(); // تحديث الشجرة بعد الإضافة
+    } else {
+      alert('حدث خطأ أثناء الإضافة: ' + error.message);
+    }
+  };
+
+  // دالة لفتح نافذة إضافة بند رئيسي جديد وتصفير البيانات
+  const openNewMainCategoryModal = () => {
+    setNewItem({
+      code: '',
+      name: '',
+      type: 'category',
+      unit: '',
+      parent_id: '',
+      qc_required: false,
+      min_stock: 0,
+      cost_price: 0
     });
+    setShowModal(true);
   };
 
-  const deleteCategory = async (c: Category) => {
-    if (!confirm(`حذف التصنيف "${c.name}"؟ لا يمكن الحذف إذا كان يحتوي على أصناف.`)) return;
-    const { error } = await supabase.from('categories').delete().eq('id', c.id);
-    if (error) {
-      alert('تعذّر الحذف — تأكد أن التصنيف لا يحتوي على أصناف أو تصنيفات فرعية');
-      return;
+  // دالة لفتح نافذة إضافة فرع تابع وتحديد الأب تلقائياً
+  const openNewBranchModal = (parentId: string) => {
+    setNewItem({
+      code: '',
+      name: '',
+      type: 'raw_material',
+      unit: 'كجم',
+      parent_id: parentId,
+      qc_required: false,
+      min_stock: 0,
+      cost_price: 0
+    });
+    setShowModal(true);
+  };
+
+  // المساعدة في عرض الأيقونات حسب النوع
+  const getTypeBadge = (type: string) => {
+    switch (type) {
+      case 'category': return <span className="px-2 py-1 bg-purple-100 text-purple-800 text-xs rounded-md font-semibold">فئة رئيسية</span>;
+      case 'raw_material': return <span className="px-2 py-1 bg-amber-100 text-amber-800 text-xs rounded-md font-semibold">مادة خام</span>;
+      case 'finished_product': return <span className="px-2 py-1 bg-emerald-100 text-emerald-800 text-xs rounded-md font-semibold">منتج تام</span>;
+      case 'spare_part': return <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-md font-semibold">قطعة غيار</span>;
+      case 'consumable': return <span className="px-2 py-1 bg-gray-100 text-gray-800 text-xs rounded-md font-semibold">مادة استهلاكية</span>;
+      default: return <span className="px-2 py-1 bg-gray-100 text-gray-800 text-xs rounded-md font-semibold">{type}</span>;
     }
-    load();
   };
 
-  const deleteItem = async (it: Item) => {
-    if (!confirm(`حذف الصنف "${it.name}"؟ لا يمكن الحذف إذا كانت هناك حركات مرتبطة.`)) return;
-    const { error } = await supabase.from('items').delete().eq('id', it.id);
-    if (error) {
-      alert('تعذّر الحذف — يوجد حركات مخزون مرتبطة بهذا الصنف');
-      return;
-    }
-    load();
-  };
-
-  const matches = (it: Item, q: string) => !q || it.name.toLowerCase().includes(q.toLowerCase()) || (it.sku || '').toLowerCase().includes(q.toLowerCase());
-
-  const renderNode = (node: TreeNode, depth: number): React.ReactNode => {
-    const filteredItems = node.items.filter((it) => matches(it, search));
-    const hasMatchingChildren = (n: TreeNode): boolean =>
-      n.items.some((it) => matches(it, search)) || n.children.some((c) => hasMatchingChildren(c));
-    const show = !search || hasMatchingChildren(node);
-
-    if (!show) return null;
+  // بناء العرض الشجري التكراري
+  const renderTree = (parentId: string | null = null, level = 0) => {
+    const children = items.filter(item => item.parent_id === parentId);
+    if (children.length === 0) return null;
 
     return (
-      <div key={node.id}>
-        <div
-          className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg hover:bg-ink-100 group transition"
-          style={{ paddingRight: `${depth * 20 + 8}px` }}
-        >
-          <button onClick={() => toggle(node.id)} className="p-1 rounded text-ink-400 hover:text-ink-700 hover:bg-ink-200 transition">
-            {node.expanded ? <ChevronDown size={16} /> : <ChevronLeft size={16} />}
-          </button>
-          {node.expanded ? (
-            <FolderOpen size={17} className="text-brand-600" />
-          ) : (
-            <Folder size={17} className="text-brand-600" />
-          )}
-          <span className="text-sm font-semibold text-ink-800 flex-1">{node.name}</span>
-          <span className="text-xs text-ink-400">{node.items.length} صنف</span>
-          <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 transition">
-            <button
-              onClick={() => setCatModal({ open: true, parent: node, edit: null })}
-              className="p-1 rounded text-ink-500 hover:bg-ink-200 hover:text-brand-600"
-              title="إضافة تصنيف فرعي"
-            >
-              <Plus size={15} />
-            </button>
-            <button
-              onClick={() => setItemModal({ open: true, category: node, edit: null })}
-              className="p-1 rounded text-ink-500 hover:bg-ink-200 hover:text-success-600"
-              title="إضافة صنف"
-            >
-              <Package size={15} />
-            </button>
-            <button
-              onClick={() => setCatModal({ open: true, parent: null, edit: node })}
-              className="p-1 rounded text-ink-500 hover:bg-ink-200 hover:text-ink-700"
-              title="تعديل"
-            >
-              <Pencil size={15} />
-            </button>
-            <button
-              onClick={() => deleteCategory(node)}
-              className="p-1 rounded text-ink-500 hover:bg-ink-200 hover:text-danger-600"
-              title="حذف"
-            >
-              <Trash2 size={15} />
-            </button>
-          </div>
-        </div>
+      <div className={`space-y-2 ${level > 0 ? 'mr-6 border-r-2 border-slate-200 pr-3 my-1' : ''}`}>
+        {children.map(item => {
+          const hasChildren = items.some(child => child.parent_id === item.id);
+          const isExpanded = expandedNodes[item.id];
 
-        {node.expanded && (
-          <div>
-            {filteredItems.map((it) => (
-              <div
-                key={it.id}
-                className="flex items-center gap-2 px-2 py-2 rounded-lg hover:bg-brand-50/50 group transition border-r-2 border-transparent hover:border-brand-400"
-                style={{ paddingRight: `${depth * 20 + 36}px` }}
-              >
-                <Package size={15} className="text-ink-400" />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-ink-800 truncate">{it.name}</span>
-                    <Badge color={TYPE_BADGE[it.item_type]}>{TYPE_LABEL[it.item_type]}</Badge>
-                    {it.min_stock > 0 && it.quantity_on_hand <= it.min_stock && (
-                      <Badge color="red">تحت الحد الأدنى</Badge>
+          return (
+            <div key={item.id} className="bg-white rounded-lg border border-slate-200 p-3 shadow-sm hover:border-slate-300 transition">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  {hasChildren ? (
+                    <button onClick={() => toggleNode(item.id)} className="p-1 text-slate-500 hover:bg-slate-100 rounded">
+                      {isExpanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+                    </button>
+                  ) : (
+                    <div className="w-6" />
+                  )}
+
+                  <div className="p-2 bg-slate-50 rounded-md text-slate-700">
+                    {item.type === 'category' ? <FolderTree size={20} className="text-purple-600" /> : <Package size={20} className="text-blue-600" />}
+                  </div>
+
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-slate-800">{item.name}</span>
+                      <span className="text-xs text-slate-400 font-mono" dir="ltr">[{item.code}]</span>
+                      {getTypeBadge(item.type)}
+                      {item.qc_required && (
+                        <span className="flex items-center gap-1 text-xs bg-rose-50 text-rose-600 px-2 py-0.5 rounded border border-rose-200">
+                          <ShieldAlert size={12} /> فحص مختبري
+                        </span>
+                      )}
+                    </div>
+                    {item.type !== 'category' && (
+                      <div className="text-xs text-slate-500 mt-1 flex gap-4">
+                        <span>وحدة القياس: <b>{item.unit}</b></span>
+                        <span>الحد الأدنى: <b>{item.min_stock}</b></span>
+                        <span>التكلفة التقديرية: <b>{item.cost_price} $</b></span>
+                      </div>
                     )}
                   </div>
-                  <div className="flex items-center gap-3 mt-0.5 text-xs text-ink-500">
-                    {it.sku && <span>SKU: {it.sku}</span>}
-                    {it.warehouse_location && (
-                      <span className="inline-flex items-center gap-0.5"><MapPin size={11} /> {it.warehouse_location}{it.bin_rack ? ` / ${it.bin_rack}` : ''}</span>
-                    )}
-                  </div>
                 </div>
-                <div className="text-left">
-                  <p className="text-sm font-bold text-ink-900">{fmtNum(it.quantity_on_hand, 3)} <span className="text-xs font-normal text-ink-500">{it.unit}</span></p>
-                  <p className="text-xs text-ink-500">متوسط: {fmtMoney(it.avg_unit_cost)}</p>
-                </div>
-                <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 transition">
-                  <button
-                    onClick={() => setItemModal({ open: true, category: null, edit: it })}
-                    className="p-1 rounded text-ink-500 hover:bg-ink-200 hover:text-ink-700"
-                    title="تعديل"
-                  >
-                    <Pencil size={15} />
-                  </button>
-                  <button
-                    onClick={() => deleteItem(it)}
-                    className="p-1 rounded text-ink-500 hover:bg-ink-200 hover:text-danger-600"
-                    title="حذف"
-                  >
-                    <Trash2 size={15} />
-                  </button>
-                </div>
+
+                <button 
+                  onClick={() => openNewBranchModal(item.id)}
+                  className="text-xs flex items-center gap-1 bg-slate-100 hover:bg-slate-200 text-slate-700 px-2 py-1 rounded transition"
+                >
+                  <Plus size={14} /> إضافة فرع
+                </button>
               </div>
-            ))}
-            {node.children.map((c) => renderNode(c, depth + 1))}
-          </div>
-        )}
+
+              {isExpanded && renderTree(item.id, level + 1)}
+            </div>
+          );
+        })}
       </div>
     );
   };
 
   return (
-    <>
-      <PageHeader
-        title="شجرة المخزون"
-        subtitle="تصنيفات هرمية للمواد الخام والنصف مصنّعة والتامة"
-        action={
-          <div className="flex gap-2">
-            <Button variant="secondary" size="sm" onClick={() => setCatModal({ open: true, parent: null, edit: null })}>
-              <Plus size={16} /> تصنيف رئيسي
-            </Button>
-            <Button size="sm" onClick={() => setItemModal({ open: true, category: null, edit: null })}>
-              <Plus size={16} /> صنف جديد
-            </Button>
+    <div dir="rtl" className="p-6 bg-slate-50 min-h-screen font-sans">
+      {/* الهيدر الأعلـى */}
+      <div className="flex justify-between items-center mb-6">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
+            <FolderTree className="text-blue-600" /> شجرة المخزون والهيكل التصنيعي
+          </h1>
+          <p className="text-sm text-slate-500 mt-1">إدارة وتقسيم المواد الخام، المنتجات التامة، وقطع الغيار بشكل شجري متعدد المستويات.</p>
+        </div>
+
+        <button 
+          onClick={openNewMainCategoryModal}
+          className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium flex items-center gap-2 shadow-sm transition"
+        >
+          <Plus size={18} /> إضافة بند رئيسي جديد
+        </button>
+      </div>
+
+      {/* منطقة عرض الشجرة */}
+      {loading ? (
+        <div className="text-center py-12 text-slate-500">جاري تحميل شجرة المخزون...</div>
+      ) : items.length === 0 ? (
+        <div className="bg-white border-2 border-dashed border-slate-200 rounded-xl p-12 text-center">
+          <Layers size={48} className="mx-auto text-slate-300 mb-3" />
+          <p className="text-slate-600 font-medium">لا توجد مواد أو فئات في شجرة المخزون حتى الآن.</p>
+          <button 
+            onClick={openNewMainCategoryModal}
+            className="mt-4 bg-blue-50 text-blue-600 hover:bg-blue-100 px-4 py-2 rounded-lg text-sm font-semibold transition"
+          >
+            إضافة أول فئة للمخزن
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {renderTree(null)}
+        </div>
+      )}
+
+      {/* نافذة الإضافة (Modal) */}
+      {showModal && (
+        <div dir="rtl" className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6">
+            <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2 border-b pb-3">
+              <Plus className="text-blue-600" /> إضافة بند جديد إلى الشجرة
+            </h3>
+
+            <form onSubmit={handleAddItem} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-1">اسم المادة / الفئة *</label>
+                <input 
+                  type="text" 
+                  required
+                  placeholder="مثال: نحاس أصفر، كيبل 4 ملم، قسم قطع الغيار"
+                  value={newItem.name}
+                  onChange={e => setNewItem({ ...newItem, name: e.target.value })}
+                  className="w-full border border-slate-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">الكود / الباركود *</label>
+                  <input 
+                    type="text" 
+                    required
+                    placeholder="مثال: RAW-001"
+                    value={newItem.code}
+                    onChange={e => setNewItem({ ...newItem, code: e.target.value })}
+                    className="w-full border border-slate-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">النوع *</label>
+                  <select 
+                    value={newItem.type}
+                    onChange={e => setNewItem({ ...newItem, type: e.target.value as any })}
+                    className="w-full border border-slate-300 rounded-lg p-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none bg-white"
+                  >
+                    <option value="category">فئة رئيسية (مجلد)</option>
+                    <option value="raw_material">مادة خام</option>
+                    <option value="finished_product">منتج تام الصنع</option>
+                    <option value="spare_part">قطعة غيار</option>
+                    <option value="consumable">مادة استهلاكية</option>
+                  </select>
+                </div>
+              </div>
+
+              {newItem.type !== 'category' && (
+                <>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1">وحدة القياس</label>
+                      <input 
+                        type="text" 
+                        placeholder="كجم، متر، حبة..."
+                        value={newItem.unit}
+                        onChange={e => setNewItem({ ...newItem, unit: e.target.value })}
+                        className="w-full border border-slate-300 rounded-lg p-2 text-sm outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1">الحد الأدنى</label>
+                      <input 
+                        type="number" 
+                        value={newItem.min_stock}
+                        onChange={e => setNewItem({ ...newItem, min_stock: Number(e.target.value) })}
+                        className="w-full border border-slate-300 rounded-lg p-2 text-sm outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-600 mb-1">التكلفة التقديرية</label>
+                      <input 
+                        type="number" 
+                        step="0.001"
+                        value={newItem.cost_price}
+                        onChange={e => setNewItem({ ...newItem, cost_price: Number(e.target.value) })}
+                        className="w-full border border-slate-300 rounded-lg p-2 text-sm outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 p-3 rounded-lg mt-2">
+                    <input 
+                      type="checkbox"
+                      id="qc_check"
+                      checked={newItem.qc_required}
+                      onChange={e => setNewItem({ ...newItem, qc_required: e.target.checked })}
+                      className="w-4 h-4 text-blue-600 rounded"
+                    />
+                    <label htmlFor="qc_check" className="text-xs font-semibold text-amber-900 cursor-pointer">
+                      تطلب فحص جودة مختبري (QC) قبل الدخول للمخزن أو الاستخدام
+                    </label>
+                  </div>
+                </>
+              )}
+
+              <div className="flex justify-end gap-2 border-t pt-4 mt-6">
+                <button 
+                  type="button"
+                  onClick={() => setShowModal(false)}
+                  className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition"
+                >
+                  إلغاء
+                </button>
+                <button 
+                  type="submit"
+                  className="px-4 py-2 text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-lg shadow-sm transition"
+                >
+                  حفظ في الشجرة
+                </button>
+              </div>
+            </form>
           </div>
-        }
-      />
-
-      <div className="bg-white rounded-2xl ring-1 ring-ink-200 shadow-sm p-4 mb-4">
-        <div className="relative">
-          <Search size={17} className="absolute right-3 top-1/2 -translate-y-1/2 text-ink-400" />
-          <Input
-            placeholder="بحث بالاسم أو رمز الصنف..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pr-10"
-          />
         </div>
-      </div>
-
-      <div className="bg-white rounded-2xl ring-1 ring-ink-200 shadow-sm p-3 min-h-[400px]">
-        {loading ? (
-          <Spinner />
-        ) : tree.length === 0 ? (
-          <EmptyState icon={<Layers size={26} />} title="لا توجد تصنيفات بعد" hint="ابدأ بإضافة تصنيف رئيسي مثل «مواد خام»" />
-        ) : (
-          <div className="space-y-0.5">{tree.map((n) => renderNode(n, 0))}</div>
-        )}
-      </div>
-
-      <CategoryModal state={catModal} onClose={() => setCatModal({ open: false, parent: null, edit: null })} onSaved={load} />
-      <ItemModal state={itemModal} onClose={() => setItemModal({ open: false, category: null, edit: null })} onSaved={load} />
-    </>
-  );
-}
-
-function CategoryModal({
-  state,
-  onClose,
-  onSaved,
-}: {
-  state: { open: boolean; parent: Category | null; edit: Category | null };
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const [name, setName] = useState('');
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (state.open) setName(state.edit?.name || '');
-  }, [state.open, state.edit]);
-
-  const save = async () => {
-    if (!name.trim()) return;
-    setSaving(true);
-    if (state.edit) {
-      await supabase.from('categories').update({ name: name.trim() }).eq('id', state.edit.id);
-    } else {
-      await supabase.from('categories').insert({ name: name.trim(), parent_id: state.parent?.id || null });
-    }
-    setSaving(false);
-    onClose();
-    onSaved();
-  };
-
-  return (
-    <Modal open={state.open} onClose={onClose} title={state.edit ? 'تعديل تصنيف' : 'تصنيف جديد'} size="md">
-      <div className="space-y-4">
-        {state.parent && <p className="text-xs text-ink-500 bg-ink-50 rounded-lg px-3 py-2">تحت: {state.parent.name}</p>}
-        <Field label="اسم التصنيف" required>
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="مثال: مواد خام" autoFocus />
-        </Field>
-        <div className="flex justify-end gap-2 pt-2">
-          <Button variant="secondary" onClick={onClose}>إلغاء</Button>
-          <Button onClick={save} disabled={saving}>{saving ? 'جارٍ الحفظ...' : 'حفظ'}</Button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
-
-function ItemModal({
-  state,
-  onClose,
-  onSaved,
-}: {
-  state: { open: boolean; category: Category | null; edit: Item | null };
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [form, setForm] = useState({
-    name: '',
-    sku: '',
-    category_id: '' as string,
-    item_type: 'raw' as ItemType,
-    unit: 'وحدة',
-    min_stock: '0',
-    warehouse_location: '',
-    bin_rack: '',
-    baseline_price: '0',
-  });
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    if (state.open) {
-      supabase.from('categories').select('*').order('name').then(({ data }) => setCategories((data as Category[]) || []));
-      if (state.edit) {
-        const e = state.edit;
-        setForm({
-          name: e.name,
-          sku: e.sku || '',
-          category_id: e.category_id || '',
-          item_type: e.item_type,
-          unit: e.unit,
-          min_stock: String(e.min_stock),
-          warehouse_location: e.warehouse_location || '',
-          bin_rack: e.bin_rack || '',
-          baseline_price: String(e.baseline_price),
-        });
-      } else {
-        setForm({
-          name: '',
-          sku: '',
-          category_id: state.category?.id || '',
-          item_type: 'raw',
-          unit: 'وحدة',
-          min_stock: '0',
-          warehouse_location: '',
-          bin_rack: '',
-          baseline_price: '0',
-        });
-      }
-    }
-  }, [state.open, state.edit, state.category]);
-
-  const save = async () => {
-    if (!form.name.trim()) return;
-    setSaving(true);
-    const payload = {
-      name: form.name.trim(),
-      sku: form.sku.trim() || null,
-      category_id: form.category_id || null,
-      item_type: form.item_type,
-      unit: form.unit.trim() || 'وحدة',
-      min_stock: parseFloat(form.min_stock) || 0,
-      warehouse_location: form.warehouse_location.trim() || null,
-      bin_rack: form.bin_rack.trim() || null,
-      baseline_price: parseFloat(form.baseline_price) || 0,
-    };
-    if (state.edit) {
-      await supabase.from('items').update(payload).eq('id', state.edit.id);
-    } else {
-      await supabase.from('items').insert(payload);
-    }
-    setSaving(false);
-    onClose();
-    onSaved();
-  };
-
-  return (
-    <Modal open={state.open} onClose={onClose} title={state.edit ? 'تعديل صنف' : 'صنف جديد'} size="lg">
-      <div className="space-y-4">
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <Field label="اسم الصنف" required>
-            <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="مثال: حديد سلك 6مم" autoFocus />
-          </Field>
-          <Field label="رمز الصنف (SKU)">
-            <Input value={form.sku} onChange={(e) => setForm({ ...form, sku: e.target.value })} placeholder="RAW-001" />
-          </Field>
-          <Field label="التصنيف">
-            <Select value={form.category_id} onChange={(e) => setForm({ ...form, category_id: e.target.value })}>
-              <option value="">— بدون تصنيف —</option>
-              {categories.map((c) => (
-                <option key={c.id} value={c.id}>{c.name}</option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="نوع الصنف">
-            <Select value={form.item_type} onChange={(e) => setForm({ ...form, item_type: e.target.value as ItemType })}>
-              <option value="raw">مادة خام</option>
-              <option value="semi">نصف مصنّع</option>
-              <option value="finished">تام الصنع</option>
-            </Select>
-          </Field>
-          <Field label="وحدة القياس">
-            <Input value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} placeholder="كجم / متر / وحدة" />
-          </Field>
-          <Field label="الحد الأدنى للمخزون">
-            <Input type="number" step="0.001" value={form.min_stock} onChange={(e) => setForm({ ...form, min_stock: e.target.value })} />
-          </Field>
-          <Field label="الموقع بالمخزن">
-            <Input value={form.warehouse_location} onChange={(e) => setForm({ ...form, warehouse_location: e.target.value })} placeholder="مخزن A" />
-          </Field>
-          <Field label="الرف / البِن">
-            <Input value={form.bin_rack} onChange={(e) => setForm({ ...form, bin_rack: e.target.value })} placeholder="R-12" />
-          </Field>
-          <Field label="سعر الأساس (مرجعي)">
-            <Input type="number" step="0.001" value={form.baseline_price} onChange={(e) => setForm({ ...form, baseline_price: e.target.value })} />
-          </Field>
-        </div>
-        <div className="flex justify-end gap-2 pt-2 border-t border-ink-100">
-          <Button variant="secondary" onClick={onClose}>إلغاء</Button>
-          <Button onClick={save} disabled={saving}>{saving ? 'جارٍ الحفظ...' : 'حفظ الصنف'}</Button>
-        </div>
-      </div>
-    </Modal>
+      )}
+    </div>
   );
 }
