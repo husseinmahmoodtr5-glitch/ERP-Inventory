@@ -22,16 +22,16 @@ const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 interface BOMItem {
   material_name: string;
-  quantity_per_meter: number; // الكمية لكل 1 متر
+  quantity_per_meter: number;
   unit: string;
-  waste_percent: number; // نسبة الهدر %
+  waste_percent: number;
 }
 
 interface BOM {
   id: string;
   product_name: string;
   product_code: string;
-  unit: string; // دائماً سيكون "متر" للكابلات
+  unit: string;
   items: BOMItem[];
 }
 
@@ -49,25 +49,32 @@ interface Movement {
   quantity: number;
 }
 
+// دالة توحيد النصوص لتجاهل الهمزات والمسافات المخفية
+const normalizeText = (str: string) => {
+  if (!str) return '';
+  return str
+    .trim()
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ة/g, 'ه')
+    .toLowerCase();
+};
+
 export default function Production() {
   const [activeTab, setActiveTab] = useState<'ORDERS' | 'BOM'>('ORDERS');
   
-  // Data States
   const [boms, setBoms] = useState<BOM[]>([]);
   const [treeItems, setTreeItems] = useState<TreeItem[]>([]);
   const [movements, setMovements] = useState<Movement[]>([]);
   
-  // BOM Modal State
   const [showBomModal, setShowBomModal] = useState<boolean>(false);
   const [selectedProduct, setSelectedProduct] = useState<string>('');
   const [selectedMaterialsList, setSelectedMaterialsList] = useState<string[]>([]);
   const [bomItemsConfig, setBomItemsConfig] = useState<BOMItem[]>([]);
   const [bomStep, setBomStep] = useState<1 | 2>(1);
 
-  // Production Order State
   const [orderNumber, setOrderNumber] = useState<string>('');
   const [selectedBomId, setSelectedBomId] = useState<string>('');
-  const [targetQuantity, setTargetQuantity] = useState<number>(5000); // Default 5000m
+  const [targetQuantity, setTargetQuantity] = useState<number>(5000);
 
   useEffect(() => {
     fetchInitialData();
@@ -81,30 +88,33 @@ export default function Production() {
   };
 
   const fetchInitialData = async () => {
-    // الوصفات
+    // 1. جلب الوصفات
     const localBoms = localStorage.getItem('app_boms');
     if (localBoms) setBoms(JSON.parse(localBoms));
 
-    // شجرة المواد
+    // 2. جلب عناصر الشجرة
     try {
       const { data: tData } = await supabase.from('inventory_tree').select('*').eq('is_active', true);
-      if (tData) setTreeItems(tData as TreeItem[]);
+      if (tData && tData.length > 0) setTreeItems(tData as TreeItem[]);
     } catch {
-      // Fallback
+      console.log('جلب الشجرة من التخزين المحلي');
     }
 
-    // الحركات لحساب الرصيد
+    // 3. جلب الحركات (مع المعالجة الاحتياطية في حال كانت الداتا فارغة من السيرفر)
+    let loadedMovements: Movement[] = [];
     try {
       const { data: mData } = await supabase.from('inventory_movements').select('*');
-      if (mData) setMovements(mData as Movement[]);
-      else {
+      if (mData && mData.length > 0) {
+        loadedMovements = mData as Movement[];
+      } else {
         const localM = localStorage.getItem('app_inventory_movements');
-        if (localM) setMovements(JSON.parse(localM));
+        if (localM) loadedMovements = JSON.parse(localM);
       }
     } catch {
       const localM = localStorage.getItem('app_inventory_movements');
-      if (localM) setMovements(JSON.parse(localM));
+      if (localM) loadedMovements = JSON.parse(localM);
     }
+    setMovements(loadedMovements);
   };
 
   const saveBoms = (updated: BOM[]) => {
@@ -112,14 +122,18 @@ export default function Production() {
     localStorage.setItem('app_boms', JSON.stringify(updated));
   };
 
-  // حساب الرصيد المتوفر لمادة معينة من المخزن
+  // حساب الرصيد المتوفر بدقة مع توحيد النصوص
   const getStock = (itemName: string) => {
-    const itemIn = movements.filter(m => m.item_name === itemName && m.type === 'IN').reduce((a, c) => a + Number(c.quantity), 0);
-    const itemOut = movements.filter(m => m.item_name === itemName && m.type === 'OUT').reduce((a, c) => a + Number(c.quantity), 0);
+    const targetNorm = normalizeText(itemName);
+    const itemIn = movements
+      .filter(m => normalizeText(m.item_name) === targetNorm && m.type === 'IN')
+      .reduce((a, c) => a + Number(c.quantity), 0);
+    const itemOut = movements
+      .filter(m => normalizeText(m.item_name) === targetNorm && m.type === 'OUT')
+      .reduce((a, c) => a + Number(c.quantity), 0);
     return itemIn - itemOut;
   };
 
-  // --- دوال التحكم بوصفة التصنيع المتقدمة ---
   const toggleMaterialSelection = (materialName: string) => {
     if (selectedMaterialsList.includes(materialName)) {
       setSelectedMaterialsList(prev => prev.filter(m => m !== materialName));
@@ -132,14 +146,13 @@ export default function Production() {
     if (!selectedProduct) return alert('الرجاء اختيار المنتج المراد تصنيعه');
     if (selectedMaterialsList.length === 0) return alert('الرجاء اختيار مادة خام واحدة على الأقل');
 
-    // تجهيز جدول المعادلات بناءً على التحديد المتعدد
     const initialConfig = selectedMaterialsList.map(matName => {
       const found = treeItems.find(t => t.name === matName);
       return {
         material_name: matName,
         quantity_per_meter: 0,
         unit: found ? found.unit : 'كجم',
-        waste_percent: 1.5 // افتراضي
+        waste_percent: 1.5
       };
     });
     setBomItemsConfig(initialConfig);
@@ -147,7 +160,6 @@ export default function Production() {
   };
 
   const handleSaveBom = () => {
-    // التحقق من القيم
     const hasZero = bomItemsConfig.some(item => item.quantity_per_meter <= 0);
     if (hasZero) return alert('الرجاء إدخال كميات صحيحة أكبر من صفر لكل المواد');
 
@@ -156,7 +168,7 @@ export default function Production() {
       id: Date.now().toString(),
       product_name: selectedProduct,
       product_code: foundProd ? foundProd.code : `PRD-${Date.now().toString().slice(-4)}`,
-      unit: 'متر', // القياسي للمصنع
+      unit: 'متر',
       items: bomItemsConfig
     };
 
@@ -180,7 +192,6 @@ export default function Production() {
 
   const selectedBomForCalc = boms.find(b => b.id === selectedBomId);
   
-  // فحص هل المخزون يكفي للبدء بالإنتاج؟
   const canProduce = selectedBomForCalc?.items.every(item => {
     const grossNeeded = (item.quantity_per_meter * targetQuantity) * (1 + (item.waste_percent / 100));
     return getStock(item.material_name) >= grossNeeded;
@@ -188,7 +199,6 @@ export default function Production() {
 
   return (
     <div dir="rtl" className="p-6 bg-slate-50 min-h-screen font-sans">
-      {/* Header */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
@@ -197,7 +207,6 @@ export default function Production() {
           <p className="text-sm text-slate-500 mt-1">تخطيط أوامر الإنتاج، حساب استهلاك المواد الفوري، وهندسة الوصفات التصنيعية.</p>
         </div>
 
-        {/* Navigation Tabs */}
         <div className="flex bg-slate-200 p-1 rounded-xl">
           <button 
             onClick={() => setActiveTab('ORDERS')}
@@ -214,10 +223,8 @@ export default function Production() {
         </div>
       </div>
 
-      {/* Tab 1: Production Orders (Advanced) */}
       {activeTab === 'ORDERS' && (
         <div className="space-y-6">
-          {/* Order Configuration Card */}
           <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
             <div className="flex justify-between items-center mb-5 border-b pb-4">
               <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
@@ -265,7 +272,6 @@ export default function Production() {
             </div>
           </div>
 
-          {/* Live Stock Collision & Analysis */}
           {selectedBomForCalc && (
             <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
                <div className="flex justify-between items-center mb-4">
@@ -273,12 +279,11 @@ export default function Production() {
                     تحليل المواد لإنتاج <span className="text-blue-600">{targetQuantity.toLocaleString()} متر</span> من {selectedBomForCalc.product_name}
                   </h3>
                   
-                  {/* Future Integrations Badges */}
                   <div className="flex gap-3">
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-slate-100 text-slate-500 rounded-lg text-xs font-bold" title="قريباً: ربط بقسم الحسابات">
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-slate-100 text-slate-500 rounded-lg text-xs font-bold">
                       <DollarSign size={14} /> التكلفة: جاري الحساب..
                     </span>
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-slate-100 text-slate-500 rounded-lg text-xs font-bold" title="قريباً: حساب زمن المكائن">
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-slate-100 text-slate-500 rounded-lg text-xs font-bold">
                       <Clock size={14} /> الزمن: جاري الحساب..
                     </span>
                   </div>
@@ -317,7 +322,7 @@ export default function Production() {
                                 <CheckCircle2 size={16} /> رصيد كافٍ
                               </span>
                             ) : (
-                              <span className="inline-flex items-center gap-1.5 bg-rose-100 text-rose-700 px-3 py-1.5 rounded-lg text-xs font-bold border border-rose-200 shadow-sm animate-pulse">
+                              <span className="inline-flex items-center gap-1.5 bg-rose-100 text-rose-700 px-3 py-1.5 rounded-lg text-xs font-bold border border-rose-200 shadow-sm">
                                 <AlertCircle size={16} /> عجز ({deficit.toLocaleString(undefined, {maximumFractionDigits: 2})} {item.unit})
                               </span>
                             )}
@@ -329,7 +334,6 @@ export default function Production() {
                 </table>
               </div>
 
-              {/* Action Button */}
               <div className="mt-6 flex justify-end">
                 <button 
                   disabled={!canProduce}
@@ -344,7 +348,6 @@ export default function Production() {
         </div>
       )}
 
-      {/* Tab 2: BOM Management */}
       {activeTab === 'BOM' && (
         <div>
           <div className="flex justify-between items-center mb-6">
@@ -415,12 +418,9 @@ export default function Production() {
         </div>
       )}
 
-      {/* Modern BOM Multi-Step Modal */}
       {showBomModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh]">
-            
-            {/* Modal Header */}
             <div className="bg-slate-800 p-5 flex justify-between items-center shrink-0">
               <h3 className="text-xl font-bold text-white flex items-center gap-2">
                 <Settings className="text-blue-400" /> 
@@ -431,10 +431,7 @@ export default function Production() {
               </button>
             </div>
 
-            {/* Modal Body */}
             <div className="p-6 overflow-y-auto grow">
-              
-              {/* STEP 1: Selection */}
               {bomStep === 1 && (
                 <div className="space-y-6">
                   <div>
@@ -477,14 +474,12 @@ export default function Production() {
                 </div>
               )}
 
-              {/* STEP 2: Formulation */}
               {bomStep === 2 && (
                 <div className="space-y-5">
                   <div className="bg-blue-50 text-blue-800 p-4 rounded-xl border border-blue-100 flex items-start gap-3">
                     <AlertCircle className="shrink-0 mt-0.5" size={20} />
                     <p className="text-sm font-semibold">
-                      أدخل الكمية المطلوبة بالوحدة المحددة لإنتاج <strong className="text-lg">متر واحد (1m)</strong> فقط من {selectedProduct}. <br/>
-                      (ملاحظة: للبكرات الخشبية، إذا كانت البكرة تتسع لـ 1000 متر، أدخل الكمية 0.001)
+                      أدخل الكمية المطلوبة بالوحدة المحددة لإنتاج <strong className="text-lg">متر واحد (1m)</strong> فقط من {selectedProduct}.
                     </p>
                   </div>
 
@@ -508,7 +503,7 @@ export default function Production() {
                               setBomItemsConfig(updated);
                             }}
                             className="w-full border-2 border-slate-200 rounded-lg p-2 text-sm font-bold text-blue-700 outline-none focus:border-blue-500 text-center"
-                            placeholder="مثال: 0.850"
+                            placeholder="مثال: 0.256"
                           />
                         </div>
 
@@ -533,7 +528,6 @@ export default function Production() {
               )}
             </div>
 
-            {/* Modal Footer */}
             <div className="bg-slate-50 p-5 border-t border-slate-200 flex justify-between shrink-0">
               {bomStep === 1 ? (
                 <>
@@ -551,7 +545,6 @@ export default function Production() {
                 </>
               )}
             </div>
-
           </div>
         </div>
       )}
