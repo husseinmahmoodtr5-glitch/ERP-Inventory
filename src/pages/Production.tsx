@@ -13,7 +13,11 @@ import {
   Clock,
   DollarSign,
   Save,
-  Play
+  Play,
+  Check,
+  Ban,
+  Activity,
+  BarChart3
 } from 'lucide-react';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
@@ -55,6 +59,18 @@ interface Movement {
   notes?: string;
 }
 
+interface ProductionOrder {
+  id: string;
+  order_number: string;
+  product_name: string;
+  target_quantity: number;
+  unit: string;
+  start_date: string;
+  completed_date?: string;
+  status: 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
+  materials_used: { name: string; quantity: number; unit: string }[];
+}
+
 const normalizeText = (str: string) => {
   if (!str) return '';
   return str
@@ -65,11 +81,12 @@ const normalizeText = (str: string) => {
 };
 
 export default function Production() {
-  const [activeTab, setActiveTab] = useState<'ORDERS' | 'BOM'>('ORDERS');
+  const [activeTab, setActiveTab] = useState<'ORDERS' | 'BOM' | 'LOG'>('ORDERS');
   
   const [boms, setBoms] = useState<BOM[]>([]);
   const [treeItems, setTreeItems] = useState<TreeItem[]>([]);
   const [movements, setMovements] = useState<Movement[]>([]);
+  const [orders, setOrders] = useState<ProductionOrder[]>([]);
   
   const [showBomModal, setShowBomModal] = useState<boolean>(false);
   const [selectedProduct, setSelectedProduct] = useState<string>('');
@@ -95,6 +112,9 @@ export default function Production() {
   const fetchInitialData = async () => {
     const localBoms = localStorage.getItem('app_boms');
     if (localBoms) setBoms(JSON.parse(localBoms));
+
+    const localOrders = localStorage.getItem('app_production_orders');
+    if (localOrders) setOrders(JSON.parse(localOrders));
 
     try {
       const { data: tData } = await supabase.from('inventory_tree').select('*').eq('is_active', true);
@@ -124,6 +144,11 @@ export default function Production() {
     localStorage.setItem('app_boms', JSON.stringify(updated));
   };
 
+  const saveOrders = (updated: ProductionOrder[]) => {
+    setOrders(updated);
+    localStorage.setItem('app_production_orders', JSON.stringify(updated));
+  };
+
   const getStock = (itemName: string) => {
     const targetNorm = normalizeText(itemName);
     const itemIn = movements
@@ -135,27 +160,36 @@ export default function Production() {
     return itemIn - itemOut;
   };
 
-  // دالة بدء الإنتاج والسحب الفعلي من المخزن
+  // 1. بدء أمر الإنتاج وخصم المواد المخزنية
   const handleStartProduction = async () => {
     if (!selectedBomForCalc) return;
 
-    const confirmMsg = `هل أنت متأكد من تأكيد وبدء أمر الإنتاج رقم (${orderNumber}) لإنتاج ${targetQuantity.toLocaleString()} متر من (${selectedBomForCalc.product_name})؟\n\nسيتم خصم كافة المواد الخام المطلوبة تلقائياً من المخزن.`;
+    const confirmMsg = `هل أنت متأكد من تأكيد وبدء أمر الإنتاج رقم (${orderNumber}) لإنتاج ${targetQuantity.toLocaleString()} متر من (${selectedBomForCalc.product_name})؟\n\nسيتم خصم كافة المواد الخام المطلوبة تلقائياً من المخزن وتحويل الأمر إلى "قيد التشغيل".`;
 
     if (!window.confirm(confirmMsg)) return;
 
     const todayDate = new Date().toISOString().split('T')[0];
 
+    const materialsUsedSummary: { name: string; quantity: number; unit: string }[] = [];
+
     // إنشاء حركات صادر مخزنية لكل مادة خامة في الوصفة
     const newOutMovements: Movement[] = selectedBomForCalc.items.map(item => {
       const netNeeded = item.quantity_per_meter * targetQuantity;
       const grossNeeded = netNeeded * (1 + (item.waste_percent / 100));
+      const qtyRounded = Number(grossNeeded.toFixed(3));
+
+      materialsUsedSummary.push({
+        name: item.material_name,
+        quantity: qtyRounded,
+        unit: item.unit
+      });
 
       return {
         id: Date.now().toString() + Math.random().toString().slice(2, 6),
         date: todayDate,
         type: 'OUT',
         item_name: item.material_name,
-        quantity: Number(grossNeeded.toFixed(3)),
+        quantity: qtyRounded,
         unit: item.unit,
         doc_number: orderNumber,
         qc_status: 'مقبول (مطابق)',
@@ -163,22 +197,82 @@ export default function Production() {
       };
     });
 
-    // 1. الحفظ في قاعدة البيانات Supabase
+    // إضافة أمر الإنتاج إلى سجل الأوامر بحالة "قيد التشغيل"
+    const newOrder: ProductionOrder = {
+      id: Date.now().toString(),
+      order_number: orderNumber,
+      product_name: selectedBomForCalc.product_name,
+      target_quantity: targetQuantity,
+      unit: 'متر',
+      start_date: new Date().toLocaleString('ar-IQ'),
+      status: 'IN_PROGRESS',
+      materials_used: materialsUsedSummary
+    };
+
+    // حفظ حركة المخزون
     try {
       await supabase.from('inventory_movements').insert(newOutMovements);
     } catch {
       console.log('تعذر الحفظ في السيرفر، تم الاعتماد على التخزين المحلي');
     }
 
-    // 2. التحديث في حالة الصفحة والتخزين المحلي
     const updatedMovements = [...newOutMovements, ...movements];
     setMovements(updatedMovements);
     localStorage.setItem('app_inventory_movements', JSON.stringify(updatedMovements));
 
-    alert(`🚀 تم تأكيد أمر الإنتاج (${orderNumber}) بنجاح!\nوتم خصم جميع المواد الخام المطلوبة من المخزن.`);
+    // حفظ أمر الإنتاج الجديد
+    const updatedOrders = [newOrder, ...orders];
+    saveOrders(updatedOrders);
+
+    alert(`🚀 تم تأكيد أمر الإنتاج (${orderNumber}) بنجاح!\n• تم خصم المواد من المخزن.\n• تم نقل الأمر إلى "سجل وحالة الأوامر" (قيد التشغيل).`);
     
-    // إعادة توليد رقم أمر جديد
     generateOrderNumber();
+    setActiveTab('LOG'); // الانتقال التلقائي لمتابعة حالة الأمر
+  };
+
+  // 2. إكمال أمر الإنتاج وإدخال المنتج التام للمخزن
+  const handleCompleteOrder = async (order: ProductionOrder) => {
+    if (!window.confirm(`هل اكتمل تصنيع أمر الإنتاج رقم (${order.order_number}) بالكامل؟\n\nسيتم إضافة (${order.target_quantity.toLocaleString()} متر من ${order.product_name}) كـ "وارد جديد" إلى المخزن.`)) return;
+
+    const todayDate = new Date().toISOString().split('T')[0];
+
+    // حركة وارد جديدة للمنتج التام
+    const finishedProductMovement: Movement = {
+      id: Date.now().toString(),
+      date: todayDate,
+      type: 'IN',
+      item_name: order.product_name,
+      quantity: order.target_quantity,
+      unit: order.unit,
+      doc_number: order.order_number,
+      qc_status: 'مقبول (مطابق)',
+      notes: `إيداع آلي لمنتج تام ناتج عن أمر الإنتاج المكتمل (${order.order_number})`
+    };
+
+    try {
+      await supabase.from('inventory_movements').insert([finishedProductMovement]);
+    } catch {
+      console.log('تعذر الحفظ في السيرفر');
+    }
+
+    const updatedMovements = [finishedProductMovement, ...movements];
+    setMovements(updatedMovements);
+    localStorage.setItem('app_inventory_movements', JSON.stringify(updatedMovements));
+
+    // تحديث حالة الأمر إلى مكتمل
+    const updatedOrders = orders.map(o => {
+      if (o.id === order.id) {
+        return {
+          ...o,
+          status: 'COMPLETED' as const,
+          completed_date: new Date().toLocaleString('ar-IQ')
+        };
+      }
+      return o;
+    });
+
+    saveOrders(updatedOrders);
+    alert(`🎉 تهانينا! تم إكمال أمر الإنتاج (${order.order_number}) وتوريد المنتج التام (${order.product_name}) إلى المخزن بنجاح.`);
   };
 
   const toggleMaterialSelection = (materialName: string) => {
@@ -244,14 +338,17 @@ export default function Production() {
     return getStock(item.material_name) >= grossNeeded;
   });
 
+  const activeOrdersCount = orders.filter(o => o.status === 'IN_PROGRESS').length;
+  const completedOrdersCount = orders.filter(o => o.status === 'COMPLETED').length;
+
   return (
     <div dir="rtl" className="p-6 bg-slate-50 min-h-screen font-sans">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
-            <Factory className="text-blue-600" /> إدارة الإنتاج الذكية
+            <Factory className="text-blue-600" /> إدارة ودورة حياة الإنتاج
           </h1>
-          <p className="text-sm text-slate-500 mt-1">تخطيط أوامر الإنتاج، حساب استهلاك المواد الفوري، وهندسة الوصفات التصنيعية.</p>
+          <p className="text-sm text-slate-500 mt-1">تخطيط الأوامر، الخصم الآلي، ومتابعة الأوامر قيد التشغيل والمكتملة.</p>
         </div>
 
         <div className="flex bg-slate-200 p-1 rounded-xl">
@@ -259,7 +356,18 @@ export default function Production() {
             onClick={() => setActiveTab('ORDERS')}
             className={`px-4 py-2 rounded-lg text-sm font-bold transition flex items-center gap-2 ${activeTab === 'ORDERS' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600'}`}
           >
-            <ClipboardList size={18} /> أوامر الإنتاج
+            <ClipboardList size={18} /> أمر جديد
+          </button>
+          <button 
+            onClick={() => setActiveTab('LOG')}
+            className={`px-4 py-2 rounded-lg text-sm font-bold transition flex items-center gap-2 relative ${activeTab === 'LOG' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600'}`}
+          >
+            <Activity size={18} /> سجل وتتبع الأوامر
+            {activeOrdersCount > 0 && (
+              <span className="bg-blue-600 text-white text-[10px] px-1.5 py-0.5 rounded-full font-bold">
+                {activeOrdersCount}
+              </span>
+            )}
           </button>
           <button 
             onClick={() => setActiveTab('BOM')}
@@ -270,6 +378,40 @@ export default function Production() {
         </div>
       </div>
 
+      {/* ملخص إحصائي سريع للأوامر */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
+          <div>
+            <div className="text-xs font-bold text-slate-400">الأوامر قيد التشغيل حالياً</div>
+            <div className="text-2xl font-bold text-blue-600 mt-1">{activeOrdersCount} أمر</div>
+          </div>
+          <div className="p-3 bg-blue-50 text-blue-600 rounded-xl">
+            <Activity size={24} />
+          </div>
+        </div>
+
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
+          <div>
+            <div className="text-xs font-bold text-slate-400">الأوامر المكتملة</div>
+            <div className="text-2xl font-bold text-emerald-600 mt-1">{completedOrdersCount} أمر</div>
+          </div>
+          <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl">
+            <CheckCircle2 size={24} />
+          </div>
+        </div>
+
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
+          <div>
+            <div className="text-xs font-bold text-slate-400">إجمالي الأوامر الكلي</div>
+            <div className="text-2xl font-bold text-slate-800 mt-1">{orders.length} أمر</div>
+          </div>
+          <div className="p-3 bg-slate-100 text-slate-600 rounded-xl">
+            <BarChart3 size={24} />
+          </div>
+        </div>
+      </div>
+
+      {/* TAB 1: إعداد أمر إنتاج جديد */}
       {activeTab === 'ORDERS' && (
         <div className="space-y-6">
           <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
@@ -325,15 +467,6 @@ export default function Production() {
                   <h3 className="font-bold text-slate-800 text-lg">
                     تحليل المواد لإنتاج <span className="text-blue-600">{targetQuantity.toLocaleString()} متر</span> من {selectedBomForCalc.product_name}
                   </h3>
-                  
-                  <div className="flex gap-3">
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-slate-100 text-slate-500 rounded-lg text-xs font-bold">
-                      <DollarSign size={14} /> التكلفة: جاري الحساب..
-                    </span>
-                    <span className="inline-flex items-center gap-1.5 px-3 py-1 bg-slate-100 text-slate-500 rounded-lg text-xs font-bold">
-                      <Clock size={14} /> الزمن: جاري الحساب..
-                    </span>
-                  </div>
                </div>
 
               <div className="overflow-x-auto rounded-xl border border-slate-200 shadow-sm">
@@ -341,7 +474,7 @@ export default function Production() {
                   <thead className="bg-slate-800 text-white">
                     <tr>
                       <th className="p-4 font-semibold">المادة الأولية</th>
-                      <th className="p-4 text-center font-semibold text-slate-300">المعادلة (للمتر الواحد)</th>
+                      <th className="p-4 text-center font-semibold text-slate-300">المعادلة (للمتر)</th>
                       <th className="p-4 text-center font-semibold">المطلوب الصافي</th>
                       <th className="p-4 text-center font-semibold text-amber-300">الإجمالي (مع الهدر)</th>
                       <th className="p-4 text-center font-semibold">متوفر في المخزن</th>
@@ -396,6 +529,84 @@ export default function Production() {
         </div>
       )}
 
+      {/* TAB 2: سجل ومتابعة حالة أوامر الإنتاج */}
+      {activeTab === 'LOG' && (
+        <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+          <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
+            <Activity className="text-blue-600" size={20} /> سجل وتتبع أمر الإنتاج وحالتها
+          </h2>
+
+          {orders.length === 0 ? (
+            <div className="text-center py-12 text-slate-400">
+              <ClipboardList size={48} className="mx-auto mb-2 opacity-40" />
+              <p className="font-bold">لا توجد أوامر إنتاج صادرة بعد.</p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-right text-sm">
+                <thead className="bg-slate-100 text-slate-700 font-bold border-b">
+                  <tr>
+                    <th className="p-3">رقم الأمر</th>
+                    <th className="p-3">المنتج Target</th>
+                    <th className="p-3 text-center">الكمية المطلوب تصنيعها</th>
+                    <th className="p-3 text-center">تاريخ البدء</th>
+                    <th className="p-3 text-center">حالة الأمر الحالية</th>
+                    <th className="p-3 text-center">المواد المخصومة</th>
+                    <th className="p-3 text-center">الإجراءات</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {orders.map(order => (
+                    <tr key={order.id} className="hover:bg-slate-50 transition">
+                      <td className="p-3 font-mono font-bold text-blue-700">{order.order_number}</td>
+                      <td className="p-3 font-bold text-slate-800">{order.product_name}</td>
+                      <td className="p-3 text-center font-bold text-slate-700">{order.target_quantity.toLocaleString()} {order.unit}</td>
+                      <td className="p-3 text-center text-xs font-mono text-slate-500">{order.start_date}</td>
+                      <td className="p-3 text-center">
+                        {order.status === 'IN_PROGRESS' && (
+                          <span className="inline-flex items-center gap-1.5 bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-xs font-bold animate-pulse">
+                            <Activity size={14} /> قيد التشغيل (جارِ الإنتاج)
+                          </span>
+                        )}
+                        {order.status === 'COMPLETED' && (
+                          <span className="inline-flex items-center gap-1.5 bg-emerald-100 text-emerald-800 px-3 py-1 rounded-full text-xs font-bold">
+                            <CheckCircle2 size={14} /> مكتمل (تم التوريد للمخزن)
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-3 text-center">
+                        <details className="cursor-pointer text-xs text-blue-600 font-bold">
+                          <summary>عرض التفاصيل ({order.materials_used.length} مواد)</summary>
+                          <div className="mt-2 text-right bg-slate-50 p-2 rounded border border-slate-200 font-normal text-slate-700">
+                            {order.materials_used.map((m, idx) => (
+                              <div key={idx}>• {m.name}: <strong className="text-amber-700">{m.quantity} {m.unit}</strong></div>
+                            ))}
+                          </div>
+                        </details>
+                      </td>
+                      <td className="p-3 text-center">
+                        {order.status === 'IN_PROGRESS' && (
+                          <button 
+                            onClick={() => handleCompleteOrder(order)}
+                            className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold shadow transition flex items-center gap-1 mx-auto cursor-pointer"
+                          >
+                            <Check size={14} /> إكمال وإنهاء الأمر
+                          </button>
+                        )}
+                        {order.status === 'COMPLETED' && (
+                          <span className="text-xs text-slate-400 font-bold">مكتمل في {order.completed_date}</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TAB 3: وصفات التصنيع BOM */}
       {activeTab === 'BOM' && (
         <div>
           <div className="flex justify-between items-center mb-6">
@@ -466,6 +677,7 @@ export default function Production() {
         </div>
       )}
 
+      {/* مودال إنشاء وصفة تصنيع جديدة */}
       {showBomModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh]">
@@ -497,7 +709,7 @@ export default function Production() {
                   </div>
 
                   <div>
-                    <label className="block text-sm font-bold text-slate-700 mb-3 border-b pb-2">حدد جميع المواد الأولية المطلوبة لصناعة هذا الكابل (Multi-Select)</label>
+                    <label className="block text-sm font-bold text-slate-700 mb-3 border-b pb-2">حدد جميع المواد الأولية المطلوبة لصناعة هذا الكابل</label>
                     <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                       {treeItems.map(item => (
                         <div 
