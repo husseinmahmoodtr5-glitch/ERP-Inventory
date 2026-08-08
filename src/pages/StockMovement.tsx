@@ -1,297 +1,459 @@
-import { useEffect, useState, useCallback } from 'react';
-import { ArrowDownToLine, ArrowUpFromLine, Plus, Search, Download, Printer, ArrowLeftRight } from 'lucide-react';
-import { supabase, Item, Movement, MovementType } from '@/lib/supabase';
-import { fmtMoney, fmtNum, fmtDate } from '@/lib/format';
-import { exportToCSV, printHTML } from '@/lib/csv';
-import { Badge, Button, Modal, Field, Input, Select, Textarea, Spinner, PageHeader, EmptyState } from '@/components/ui';
-
-interface Row extends Movement {
-  items: { name: string; unit: string } | null;
-}
-
-export default function StockMovement() {
-  const [rows, setRows] = useState<Row[]>([]);
-  const [items, setItems] = useState<Item[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
-  const [typeFilter, setTypeFilter] = useState<string>('');
-  const [modal, setModal] = useState<{ open: boolean; type: MovementType }>({ open: false, type: 'in' });
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    const [mv, it] = await Promise.all([
-      supabase.from('movements').select('*, items(name,unit)').order('created_at', { ascending: false }).limit(500),
-      supabase.from('items').select('*').order('name'),
-    ]);
-    setRows((mv.data as Row[]) || []);
-    setItems((it.data as Item[]) || []);
-    setLoading(false);
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  const filtered = rows.filter((r) => {
-    if (typeFilter && r.movement_type !== typeFilter) return false;
-    if (search) {
-      const name = r.items?.name || '';
-      return name.toLowerCase().includes(search.toLowerCase()) || (r.batch_lot || '').toLowerCase().includes(search.toLowerCase());
-    }
-    return true;
-  });
-
-  const exportData = () => {
-    exportToCSV(
-      'حركات_المخزون',
-      ['التاريخ', 'الصنف', 'النوع', 'الكمية', 'التكلفة', 'الدفعة', 'المورد/الوجهة', 'ملاحظات'],
-      filtered.map((r) => [
-        fmtDate(r.movement_date),
-        r.items?.name || '—',
-        r.movement_type === 'in' ? 'وارد' : r.movement_type === 'out' ? 'صادر' : 'تسوية',
-        fmtNum(r.qty, 3),
-        fmtMoney(r.unit_cost),
-        r.batch_lot || '',
-        r.supplier || r.destination || '',
-        r.notes || '',
-      ])
-    );
-  };
-
-  const printData = () => {
-    printHTML(
-      'تقرير حركات المخزون',
-      ['التاريخ', 'الصنف', 'النوع', 'الكمية', 'التكلفة', 'الدفعة', 'المورد/الوجهة'],
-      filtered.map((r) => [
-        fmtDate(r.movement_date),
-        r.items?.name || '—',
-        r.movement_type === 'in' ? 'وارد' : r.movement_type === 'out' ? 'صادر' : 'تسوية',
-        fmtNum(r.qty, 3),
-        fmtMoney(r.unit_cost),
-        r.batch_lot || '',
-        r.supplier || r.destination || '',
-      ])
-    );
-  };
-
-  return (
-    <>
-      <PageHeader
-        title="حركة المخزون"
-        subtitle="وارد / صادر مع حساب المتوسط المرجح تلقائياً"
-        action={
-          <div className="flex gap-2">
-            <Button variant="secondary" size="sm" onClick={exportData}><Download size={16} /> CSV</Button>
-            <Button variant="secondary" size="sm" onClick={printData}><Printer size={16} /> طباعة</Button>
-            <Button variant="success" size="sm" onClick={() => setModal({ open: true, type: 'in' })}><ArrowDownToLine size={16} /> وارد</Button>
-            <Button variant="danger" size="sm" onClick={() => setModal({ open: true, type: 'out' })}><ArrowUpFromLine size={16} /> صادر</Button>
-          </div>
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>نظام إدارة المخزون - حركة المواد</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Font Cairo -->
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;800&display=swap" rel="stylesheet">
+    
+    <style>
+        * {
+            font-family: 'Cairo', sans-serif;
         }
-      />
+        @media print {
+            .no-print {
+                display: none !important;
+            }
+            .print-only {
+                display: block !important;
+            }
+            body {
+                background: #fff !important;
+                color: #000 !important;
+            }
+            .shadow-custom {
+                box-shadow: none !important;
+                border: 1px solid #ccc !important;
+            }
+        }
+        .print-only {
+            display: none;
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen pb-12">
 
-      <div className="bg-white rounded-2xl ring-1 ring-ink-200 shadow-sm p-4 mb-4">
-        <div className="flex flex-wrap gap-3">
-          <div className="relative flex-1 min-w-[200px]">
-            <Search size={17} className="absolute right-3 top-1/2 -translate-y-1/2 text-ink-400" />
-            <Input placeholder="بحث بالصنف أو رقم الدفعة..." value={search} onChange={(e) => setSearch(e.target.value)} className="pr-10" />
-          </div>
-          <Select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className="w-auto">
-            <option value="">كل الأنواع</option>
-            <option value="in">وارد فقط</option>
-            <option value="out">صادر فقط</option>
-            <option value="adjust">تسوية فقط</option>
-          </Select>
+    <!-- Header Section -->
+    <header class="bg-slate-800 border-b border-slate-700 sticky top-0 z-30 shadow-lg no-print">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col sm:flex-row justify-between items-center gap-4">
+            <div class="flex items-center gap-3">
+                <div class="p-3 bg-blue-600 rounded-xl text-white shadow-lg shadow-blue-500/30">
+                    <i class="fa-solid fa-boxes-packing text-2xl"></i>
+                </div>
+                <div>
+                    <h1 class="text-2xl font-bold text-white tracking-wide">حركة المخزن (الوارد والصادر)</h1>
+                    <p class="text-xs text-slate-400">سجل إدخال وإخراج المواد، الفحص الفني، والتصدير</p>
+                </div>
+            </div>
+            
+            <div class="flex flex-wrap items-center gap-2">
+                <button onclick="openModal()" class="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-4 py-2.5 rounded-xl transition duration-200 flex items-center gap-2 shadow-lg shadow-emerald-600/20 active:scale-95">
+                    <i class="fa-solid fa-plus-circle"></i>
+                    <span>تسجيل حركة جديدة</span>
+                </button>
+                <button onclick="exportToCSV()" class="bg-slate-700 hover:bg-slate-600 text-slate-200 font-semibold px-4 py-2.5 rounded-xl transition duration-200 flex items-center gap-2 border border-slate-600 active:scale-95">
+                    <i class="fa-solid fa-file-excel text-emerald-400"></i>
+                    <span>تصدير CSV</span>
+                </button>
+                <button onclick="window.print()" class="bg-slate-700 hover:bg-slate-600 text-slate-200 font-semibold px-4 py-2.5 rounded-xl transition duration-200 flex items-center gap-2 border border-slate-600 active:scale-95">
+                    <i class="fa-solid fa-print text-blue-400"></i>
+                    <span>طباعة التقرير</span>
+                </button>
+            </div>
         </div>
-      </div>
+    </header>
 
-      <div className="bg-white rounded-2xl ring-1 ring-ink-200 shadow-sm overflow-hidden">
-        {loading ? (
-          <Spinner />
-        ) : filtered.length === 0 ? (
-          <EmptyState icon={<ArrowLeftRight size={26} />} title="لا توجد حركات" hint="ابدأ بتسجيل وارد أو صادر" />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-ink-800 text-ink-100 text-xs">
-                  <th className="px-4 py-3 text-right font-semibold">التاريخ</th>
-                  <th className="px-4 py-3 text-right font-semibold">الصنف</th>
-                  <th className="px-4 py-3 text-right font-semibold">النوع</th>
-                  <th className="px-4 py-3 text-right font-semibold">الكمية</th>
-                  <th className="px-4 py-3 text-right font-semibold">التكلفة/وحدة</th>
-                  <th className="px-4 py-3 text-right font-semibold">القيمة</th>
-                  <th className="px-4 py-3 text-right font-semibold">الدفعة</th>
-                  <th className="px-4 py-3 text-right font-semibold">المورد / الوجهة</th>
-                  <th className="px-4 py-3 text-right font-semibold">ملاحظات</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-ink-100">
-                {filtered.map((r) => (
-                  <tr key={r.id} className="hover:bg-ink-50 transition">
-                    <td className="px-4 py-2.5 text-ink-600 whitespace-nowrap">{fmtDate(r.movement_date)}</td>
-                    <td className="px-4 py-2.5 font-medium text-ink-800">{r.items?.name || '—'}</td>
-                    <td className="px-4 py-2.5">
-                      {r.movement_type === 'in' && <Badge color="green">وارد</Badge>}
-                      {r.movement_type === 'out' && <Badge color="red">صادر</Badge>}
-                      {r.movement_type === 'adjust' && <Badge color="amber">تسوية</Badge>}
+    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
+
+        <!-- KPI Cards -->
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 mb-8 no-print">
+            <div class="bg-slate-800 border border-slate-700/60 rounded-2xl p-5 shadow-lg flex items-center justify-between">
+                <div>
+                    <p class="text-xs font-semibold text-slate-400 mb-1">إجمالي الوارد</p>
+                    <h3 id="stat-in" class="text-2xl font-extrabold text-emerald-400">0</h3>
+                </div>
+                <div class="w-12 h-12 rounded-xl bg-emerald-500/10 text-emerald-400 flex items-center justify-center text-xl">
+                    <i class="fa-solid fa-arrow-down-left"></i>
+                </div>
+            </div>
+
+            <div class="bg-slate-800 border border-slate-700/60 rounded-2xl p-5 shadow-lg flex items-center justify-between">
+                <div>
+                    <p class="text-xs font-semibold text-slate-400 mb-1">إجمالي الصادر</p>
+                    <h3 id="stat-out" class="text-2xl font-extrabold text-rose-400">0</h3>
+                </div>
+                <div class="w-12 h-12 rounded-xl bg-rose-500/10 text-rose-400 flex items-center justify-center text-xl">
+                    <i class="fa-solid fa-arrow-up-right"></i>
+                </div>
+            </div>
+
+            <div class="bg-slate-800 border border-slate-700/60 rounded-2xl p-5 shadow-lg flex items-center justify-between">
+                <div>
+                    <p class="text-xs font-semibold text-slate-400 mb-1">صافي الحركة</p>
+                    <h3 id="stat-net" class="text-2xl font-extrabold text-blue-400">0</h3>
+                </div>
+                <div class="w-12 h-12 rounded-xl bg-blue-500/10 text-blue-400 flex items-center justify-center text-xl">
+                    <i class="fa-solid fa-scale-balanced"></i>
+                </div>
+            </div>
+
+            <div class="bg-slate-800 border border-slate-700/60 rounded-2xl p-5 shadow-lg flex items-center justify-between">
+                <div>
+                    <p class="text-xs font-semibold text-slate-400 mb-1">عدد الحركات المسجلة</p>
+                    <h3 id="stat-count" class="text-2xl font-extrabold text-purple-400">0</h3>
+                </div>
+                <div class="w-12 h-12 rounded-xl bg-purple-500/10 text-purple-400 flex items-center justify-center text-xl">
+                    <i class="fa-solid fa-list-check"></i>
+                </div>
+            </div>
+        </div>
+
+        <!-- Filter & Search Section -->
+        <div class="bg-slate-800 border border-slate-700/60 rounded-2xl p-4 mb-6 no-print flex flex-col md:flex-row justify-between items-center gap-4">
+            <div class="relative w-full md:w-96">
+                <i class="fa-solid fa-magnifying-glass absolute right-3.5 top-3.5 text-slate-400"></i>
+                <input type="text" id="searchInput" oninput="renderTable()" placeholder="ابحث باسم المادة، رقم المستند، أو الملاحظات..." class="w-full bg-slate-900 border border-slate-700 text-slate-200 text-sm rounded-xl pr-10 pl-4 py-2.5 focus:outline-none focus:border-blue-500 transition">
+            </div>
+
+            <div class="flex items-center gap-2 w-full md:w-auto overflow-x-auto pb-1 md:pb-0">
+                <button onclick="setFilter('ALL')" id="filter-ALL" class="filter-btn px-4 py-2 rounded-xl text-xs font-semibold transition bg-blue-600 text-white">الكل</button>
+                <button onclick="setFilter('IN')" id="filter-IN" class="filter-btn px-4 py-2 rounded-xl text-xs font-semibold transition bg-slate-700 text-slate-300 hover:bg-slate-600">الوارد فقط</button>
+                <button onclick="setFilter('OUT')" id="filter-OUT" class="filter-btn px-4 py-2 rounded-xl text-xs font-semibold transition bg-slate-700 text-slate-300 hover:bg-slate-600">الصادر فقط</button>
+            </div>
+        </div>
+
+        <!-- Table Printable Header (Visible only in Print) -->
+        <div class="print-only mb-6 text-center">
+            <h2 class="text-2xl font-bold border-b pb-2">تقرير حركة المخزن (الوارد والصادر)</h2>
+            <p class="text-sm text-gray-600 mt-1">تاريخ الاستخراج: <span id="printDate"></span></p>
+        </div>
+
+        <!-- Movements Table -->
+        <div class="bg-slate-800 border border-slate-700/60 rounded-2xl shadow-xl overflow-hidden shadow-custom">
+            <div class="overflow-x-auto">
+                <table class="w-full text-right text-sm">
+                    <thead class="bg-slate-900/80 text-slate-400 border-b border-slate-700 uppercase font-semibold">
+                        <tr>
+                            <th class="py-4 px-4 text-center">#</th>
+                            <th class="py-4 px-4">التاريخ والوقت</th>
+                            <th class="py-4 px-4">نوع الحركة</th>
+                            <th class="py-4 px-4">اسم المادة</th>
+                            <th class="py-4 px-4 text-center">الكمية والوحدة</th>
+                            <th class="py-4 px-4">رقم الإذن / المستند</th>
+                            <th class="py-4 px-4">حالة الفحص (QC)</th>
+                            <th class="py-4 px-4">الملاحظات</th>
+                            <th class="py-4 px-4 text-center no-print">الإجراءات</th>
+                        </tr>
+                    </thead>
+                    <tbody id="movementsTable" class="divide-y divide-slate-700/50">
+                        <!-- Table Rows Rendered via JS -->
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Empty State -->
+            <div id="emptyState" class="hidden text-center py-12">
+                <i class="fa-solid fa-box-open text-5xl text-slate-600 mb-3"></i>
+                <p class="text-slate-400 font-medium">لا توجد حركات مخزنية مطابقة للبحث</p>
+            </div>
+        </div>
+    </main>
+
+    <!-- Modal Form (Add / Edit) -->
+    <div id="movementModal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center hidden p-4 no-print">
+        <div class="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden transform transition-all">
+            <div class="bg-slate-900 px-6 py-4 border-b border-slate-700 flex justify-between items-center">
+                <h3 id="modalTitle" class="text-lg font-bold text-white">تسجيل حركة مخزنية جديدة</h3>
+                <button onclick="closeModal()" class="text-slate-400 hover:text-white transition">
+                    <i class="fa-solid fa-xmark text-xl"></i>
+                </button>
+            </div>
+
+            <form id="movementForm" onsubmit="handleFormSubmit(event)" class="p-6 space-y-4">
+                <input type="hidden" id="editIndex">
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-300 mb-1">نوع الحركة <span class="text-rose-500">*</span></label>
+                        <select id="type" required class="w-full bg-slate-900 border border-slate-700 text-slate-100 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
+                            <option value="IN">وارد (إدخال مخزني)</option>
+                            <option value="OUT">صادر (صرف للإنتاج)</option>
+                        </select>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-300 mb-1">التاريخ <span class="text-rose-500">*</span></label>
+                        <input type="date" id="date" required class="w-full bg-slate-900 border border-slate-700 text-slate-100 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1">اسم المادة / المنتج <span class="text-rose-500">*</span></label>
+                    <input type="text" id="itemName" required placeholder="مثال: ألومنيوم 9.5 ملم / حبيبات PVC" class="w-full bg-slate-900 border border-slate-700 text-slate-100 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-300 mb-1">الكمية <span class="text-rose-500">*</span></label>
+                        <input type="number" step="0.01" id="quantity" required placeholder="0.00" class="w-full bg-slate-900 border border-slate-700 text-slate-100 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-300 mb-1">وحدة القياس <span class="text-rose-500">*</span></label>
+                        <select id="unit" required class="w-full bg-slate-900 border border-slate-700 text-slate-100 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
+                            <option value="كجم">كجم (Kilogram)</option>
+                            <option value="متر">متر (Meter)</option>
+                            <option value="طن">طن (Ton)</option>
+                            <option value="بكرة">بكرة (Reel)</option>
+                            <option value="قطعة">قطعة (Piece)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-300 mb-1">رقم المستند / الإذن</label>
+                        <input type="text" id="docNumber" placeholder="REC-2026-001" class="w-full bg-slate-900 border border-slate-700 text-slate-100 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-300 mb-1">حالة الفحص (QC)</label>
+                        <select id="qcStatus" class="w-full bg-slate-900 border border-slate-700 text-slate-100 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-500">
+                            <option value="مقبول (مطابق)">مقبول (مطابق)</option>
+                            <option value="قيد الفحص">قيد الفحص</option>
+                            <option value="مرفوض">مرفوض</option>
+                            <option value="غير مطلوب">غير مطلوب</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1">ملاحظات إضافية</label>
+                    <textarea id="notes" rows="2" placeholder="أدخل تفاصيل إضافية إن وجدت..." class="w-full bg-slate-900 border border-slate-700 text-slate-100 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-500"></textarea>
+                </div>
+
+                <div class="pt-2 flex justify-end gap-3">
+                    <button type="button" onclick="closeModal()" class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-semibold rounded-xl transition">إلغاء</button>
+                    <button type="submit" class="px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold rounded-xl shadow-lg shadow-blue-600/30 transition">حفظ الحركة</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Script Logic -->
+    <script>
+        // Default Data if empty
+        const initialData = [
+            { id: 101, date: '2026-08-01', type: 'IN', itemName: 'سبيكة ألومنيوم 9.5 ملم', quantity: 2500, unit: 'كجم', docNumber: 'PO-9941', qcStatus: 'مقبول (مطابق)', notes: 'توريد دفعة جديدة من المورد' },
+            { id: 102, date: '2026-08-03', type: 'OUT', itemName: 'حبيبات PVC عزل', quantity: 450, unit: 'كجم', docNumber: 'ISS-1020', qcStatus: 'غير مطلوب', notes: 'صرف لخط الإنتاج رقم 2' },
+            { id: 103, date: '2026-08-05', type: 'IN', itemName: 'ستيل واير 35 ملم', quantity: 1200, unit: 'كجم', docNumber: 'PO-9950', qcStatus: 'قيد الفحص', notes: 'انتظار شهادة الفحص المختبري' }
+        ];
+
+        let movements = JSON.parse(localStorage.getItem('inventory_movements')) || initialData;
+        let activeFilter = 'ALL';
+
+        function init() {
+            document.getElementById('date').valueAsDate = new Date();
+            document.getElementById('printDate').innerText = new Date().toLocaleDateString('ar-IQ');
+            renderTable();
+        }
+
+        function saveData() {
+            localStorage.setItem('inventory_movements', JSON.stringify(movements));
+            renderTable();
+        }
+
+        function calculateStats() {
+            let totalIn = 0;
+            let totalOut = 0;
+
+            movements.forEach(m => {
+                if(m.type === 'IN') totalIn += parseFloat(m.quantity);
+                if(m.type === 'OUT') totalOut += parseFloat(m.quantity);
+            });
+
+            document.getElementById('stat-in').innerText = totalIn.toLocaleString('ar-IQ') + ' وحدة';
+            document.getElementById('stat-out').innerText = totalOut.toLocaleString('ar-IQ') + ' وحدة';
+            document.getElementById('stat-net').innerText = (totalIn - totalOut).toLocaleString('ar-IQ') + ' وحدة';
+            document.getElementById('stat-count').innerText = movements.length;
+        }
+
+        function renderTable() {
+            calculateStats();
+            const tbody = document.getElementById('movementsTable');
+            const search = document.getElementById('searchInput').value.toLowerCase();
+            tbody.innerHTML = '';
+
+            const filtered = movements.filter(m => {
+                const matchesFilter = activeFilter === 'ALL' || m.type === activeFilter;
+                const matchesSearch = m.itemName.toLowerCase().includes(search) || 
+                                      m.docNumber.toLowerCase().includes(search) || 
+                                      (m.notes && m.notes.toLowerCase().includes(search));
+                return matchesFilter && matchesSearch;
+            });
+
+            if (filtered.length === 0) {
+                document.getElementById('emptyState').classList.remove('hidden');
+            } else {
+                document.getElementById('emptyState').classList.add('hidden');
+            }
+
+            filtered.forEach((m, index) => {
+                const tr = document.createElement('tr');
+                tr.className = "hover:bg-slate-700/30 transition border-b border-slate-700/50";
+
+                const isIN = m.type === 'IN';
+                const typeBadge = isIN 
+                    ? `<span class="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-xs font-bold px-2.5 py-1 rounded-lg inline-flex items-center gap-1"><i class="fa-solid fa-arrow-down"></i> وارد</span>`
+                    : `<span class="bg-rose-500/10 text-rose-400 border border-rose-500/20 text-xs font-bold px-2.5 py-1 rounded-lg inline-flex items-center gap-1"><i class="fa-solid fa-arrow-up"></i> صادر</span>`;
+
+                let qcBadgeClass = 'bg-slate-700 text-slate-300';
+                if(m.qcStatus === 'مقبول (مطابق)') qcBadgeClass = 'bg-emerald-900/40 text-emerald-300 border border-emerald-700/50';
+                if(m.qcStatus === 'قيد الفحص') qcBadgeClass = 'bg-amber-900/40 text-amber-300 border border-amber-700/50';
+                if(m.qcStatus === 'مرفوض') qcBadgeClass = 'bg-rose-900/40 text-rose-300 border border-rose-700/50';
+
+                tr.innerHTML = `
+                    <td class="py-3 px-4 text-center text-slate-400 font-mono text-xs">#${m.id}</td>
+                    <td class="py-3 px-4 text-slate-300 font-medium">${m.date}</td>
+                    <td class="py-3 px-4">${typeBadge}</td>
+                    <td class="py-3 px-4 font-semibold text-white">${m.itemName}</td>
+                    <td class="py-3 px-4 text-center font-bold text-slate-100">${Number(m.quantity).toLocaleString()} <span class="text-xs font-normal text-slate-400">${m.unit}</span></td>
+                    <td class="py-3 px-4 text-slate-300 font-mono text-xs">${m.docNumber || '-'}</td>
+                    <td class="py-3 px-4"><span class="text-xs px-2.5 py-1 rounded-md font-semibold ${qcBadgeClass}">${m.qcStatus}</span></td>
+                    <td class="py-3 px-4 text-slate-400 text-xs max-w-xs truncate">${m.notes || '-'}</td>
+                    <td class="py-3 px-4 text-center no-print">
+                        <div class="flex items-center justify-center gap-2">
+                            <button onclick="editMovement(${m.id})" title="تعديل" class="p-1.5 bg-slate-700 hover:bg-blue-600 text-slate-300 hover:text-white rounded-lg transition">
+                                <i class="fa-solid fa-pen-to-square"></i>
+                            </button>
+                            <button onclick="deleteMovement(${m.id})" title="حذف" class="p-1.5 bg-slate-700 hover:bg-rose-600 text-slate-300 hover:text-white rounded-lg transition">
+                                <i class="fa-solid fa-trash-can"></i>
+                            </button>
+                        </div>
                     </td>
-                    <td className="px-4 py-2.5 text-ink-700 font-semibold">{fmtNum(r.qty, 3)} {r.items?.unit}</td>
-                    <td className="px-4 py-2.5 text-ink-600">{fmtMoney(r.unit_cost)}</td>
-                    <td className="px-4 py-2.5 text-ink-700 font-semibold">{fmtMoney(r.qty * r.unit_cost)}</td>
-                    <td className="px-4 py-2.5 text-ink-500">{r.batch_lot || '—'}</td>
-                    <td className="px-4 py-2.5 text-ink-500">{r.supplier || r.destination || '—'}</td>
-                    <td className="px-4 py-2.5 text-ink-500 max-w-[200px] truncate">{r.notes || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
 
-      <MovementModal modal={modal} items={items} onClose={() => setModal({ open: false, type: 'in' })} onSaved={load} />
-    </>
-  );
-}
+        function setFilter(type) {
+            activeFilter = type;
+            document.querySelectorAll('.filter-btn').forEach(btn => {
+                btn.className = 'filter-btn px-4 py-2 rounded-xl text-xs font-semibold transition bg-slate-700 text-slate-300 hover:bg-slate-600';
+            });
+            document.getElementById(`filter-${type}`).className = 'filter-btn px-4 py-2 rounded-xl text-xs font-semibold transition bg-blue-600 text-white';
+            renderTable();
+        }
 
-function MovementModal({
-  modal,
-  items,
-  onClose,
-  onSaved,
-}: {
-  modal: { open: boolean; type: MovementType };
-  items: Item[];
-  onClose: () => void;
-  onSaved: () => void;
-}) {
-  const [form, setForm] = useState({
-    item_id: '',
-    qty: '',
-    unit_cost: '',
-    batch_lot: '',
-    supplier: '',
-    destination: '',
-    movement_date: new Date().toISOString().slice(0, 10),
-    notes: '',
-  });
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
+        function openModal(isEdit = false) {
+            document.getElementById('movementModal').classList.remove('hidden');
+            if(!isEdit) {
+                document.getElementById('movementForm').reset();
+                document.getElementById('editIndex').value = '';
+                document.getElementById('modalTitle').innerText = 'تسجيل حركة مخزنية جديدة';
+                document.getElementById('date').valueAsDate = new Date();
+            }
+        }
 
-  useEffect(() => {
-    if (modal.open) {
-      setForm({
-        item_id: '',
-        qty: '',
-        unit_cost: '',
-        batch_lot: '',
-        supplier: '',
-        destination: '',
-        movement_date: new Date().toISOString().slice(0, 10),
-        notes: '',
-      });
-      setError('');
-    }
-  }, [modal.open, modal.type]);
+        function closeModal() {
+            document.getElementById('movementModal').classList.add('hidden');
+        }
 
-  const selectedItem = items.find((i) => i.id === form.item_id);
+        function handleFormSubmit(e) {
+            e.preventDefault();
+            const editId = document.getElementById('editIndex').value;
 
-  const save = async () => {
-    if (!form.item_id || !form.qty) {
-      setError('يرجى اختيار الصنف وإدخال الكمية');
-      return;
-    }
-    const qty = parseFloat(form.qty);
-    if (qty <= 0) {
-      setError('الكمية يجب أن تكون أكبر من صفر');
-      return;
-    }
-    if (modal.type === 'out') {
-      if (selectedItem && qty > selectedItem.quantity_on_hand) {
-        setError(`الكمية المطلوبة (${fmtNum(qty, 3)}) أكبر من المخزون المتاح (${fmtNum(selectedItem.quantity_on_hand, 3)})`);
-        return;
-      }
-    }
-    setSaving(true);
-    setError('');
-    const unit_cost = modal.type === 'in' ? parseFloat(form.unit_cost) || 0 : 0;
-    const { error: e } = await supabase.from('movements').insert({
-      item_id: form.item_id,
-      movement_type: modal.type,
-      qty,
-      unit_cost,
-      batch_lot: form.batch_lot.trim() || null,
-      supplier: modal.type === 'in' ? form.supplier.trim() || null : null,
-      destination: modal.type === 'out' ? form.destination.trim() || null : null,
-      movement_date: form.movement_date,
-      notes: form.notes.trim() || null,
-    });
-    setSaving(false);
-    if (e) {
-      setError(e.message);
-      return;
-    }
-    onClose();
-    onSaved();
-  };
+            const movementData = {
+                id: editId ? parseInt(editId) : Date.now(),
+                type: document.getElementById('type').value,
+                date: document.getElementById('date').value,
+                itemName: document.getElementById('itemName').value,
+                quantity: parseFloat(document.getElementById('quantity').value),
+                unit: document.getElementById('unit').value,
+                docNumber: document.getElementById('docNumber').value,
+                qcStatus: document.getElementById('qcStatus').value,
+                notes: document.getElementById('notes').value
+            };
 
-  const isOut = modal.type === 'out';
+            if (editId) {
+                const idx = movements.findIndex(m => m.id == editId);
+                if (idx !== -1) movements[idx] = movementData;
+            } else {
+                movements.unshift(movementData);
+            }
 
-  return (
-    <Modal open={modal.open} onClose={onClose} title={isOut ? 'إخراج من المخزون' : 'إدخال للمخزون'} size="lg">
-      <div className="space-y-4">
-        {error && (
-          <div className="bg-danger-50 text-danger-700 text-sm rounded-lg px-3 py-2 ring-1 ring-danger-500/20">{error}</div>
-        )}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <Field label="الصنف" required>
-            <Select value={form.item_id} onChange={(e) => setForm({ ...form, item_id: e.target.value })}>
-              <option value="">— اختر الصنف —</option>
-              {items.map((i) => (
-                <option key={i.id} value={i.id}>
-                  {i.name} {i.sku ? `(${i.sku})` : ''} — متاح: {fmtNum(i.quantity_on_hand, 3)} {i.unit}
-                </option>
-              ))}
-            </Select>
-          </Field>
-          <Field label="التاريخ" required>
-            <Input type="date" value={form.movement_date} onChange={(e) => setForm({ ...form, movement_date: e.target.value })} />
-          </Field>
-          <Field label="الكمية" required>
-            <Input type="number" step="0.001" value={form.qty} onChange={(e) => setForm({ ...form, qty: e.target.value })} placeholder="0" autoFocus />
-          </Field>
-          {!isOut && (
-            <Field label="سعر الوحدة" required>
-              <Input type="number" step="0.001" value={form.unit_cost} onChange={(e) => setForm({ ...form, unit_cost: e.target.value })} placeholder="0.00" />
-            </Field>
-          )}
-          <Field label="رقم الدفعة / اللوط">
-            <Input value={form.batch_lot} onChange={(e) => setForm({ ...form, batch_lot: e.target.value })} placeholder="LOT-2024-001" />
-          </Field>
-          {isOut ? (
-            <Field label="الوجهة / أمر الإنتاج">
-              <Input value={form.destination} onChange={(e) => setForm({ ...form, destination: e.target.value })} placeholder="إلى خط الإنتاج" />
-            </Field>
-          ) : (
-            <Field label="المورّد">
-              <Input value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })} placeholder="اسم المورّد" />
-            </Field>
-          )}
-        </div>
-        <Field label="ملاحظات">
-          <Textarea rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="ملاحظات إضافية..." />
-        </Field>
-        {selectedItem && (
-          <div className="bg-ink-50 rounded-lg px-3 py-2 text-xs text-ink-600 flex items-center justify-between">
-            <span>المخزون الحالي: <strong>{fmtNum(selectedItem.quantity_on_hand, 3)} {selectedItem.unit}</strong></span>
-            <span>متوسط التكلفة: <strong>{fmtMoney(selectedItem.avg_unit_cost)}</strong></span>
-          </div>
-        )}
-        <div className="flex justify-end gap-2 pt-2 border-t border-ink-100">
-          <Button variant="secondary" onClick={onClose}>إلغاء</Button>
-          <Button variant={isOut ? 'danger' : 'success'} onClick={save} disabled={saving}>{saving ? 'جارٍ الحفظ...' : isOut ? 'تأكيد الإخراج' : 'تأكيد الإدخال'}</Button>
-        </div>
-      </div>
-    </Modal>
-  );
-}
+            saveData();
+            closeModal();
+        }
+
+        function editMovement(id) {
+            const item = movements.find(m => m.id === id);
+            if (!item) return;
+
+            document.getElementById('editIndex').value = item.id;
+            document.getElementById('type').value = item.type;
+            document.getElementById('date').value = item.date;
+            document.getElementById('itemName').value = item.itemName;
+            document.getElementById('quantity').value = item.quantity;
+            document.getElementById('unit').value = item.unit;
+            document.getElementById('docNumber').value = item.docNumber;
+            document.getElementById('qcStatus').value = item.qcStatus;
+            document.getElementById('notes').value = item.notes;
+
+            document.getElementById('modalTitle').innerText = 'تعديل الحركة المخزنية';
+            openModal(true);
+        }
+
+        function deleteMovement(id) {
+            if (confirm('هل أنت تأكد من إزالة هذه الحركة من السجل؟')) {
+                movements = movements.filter(m => m.id !== id);
+                saveData();
+            }
+        }
+
+        // Export functionality to Excel / CSV with UTF-8 BOM
+        function exportToCSV() {
+            if(movements.length === 0) {
+                alert('لا توجد بيانات لتصديرها');
+                return;
+            }
+
+            let csvContent = "\uFEFF"; // BOM for UTF-8 Excel support
+            csvContent += "المعرف,التاريخ,نوع الحركة,اسم المادة,الكمية,الوحدة,رقم المستند,حالة الفحص,الملاحظات\n";
+
+            movements.forEach(m => {
+                const typeText = m.type === 'IN' ? 'وارد' : 'صادر';
+                const row = [
+                    m.id,
+                    m.date,
+                    typeText,
+                    `"${m.itemName}"`,
+                    m.quantity,
+                    m.unit,
+                    `"${m.docNumber || ''}"`,
+                    `"${m.qcStatus}"`,
+                    `"${m.notes || ''}"`
+                ].join(",");
+                csvContent += row + "\n";
+            });
+
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.setAttribute("href", url);
+            link.setAttribute("download", `حركة_المخزن_${new Date().toISOString().slice(0,10)}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        // Run on Page Load
+        init();
+    </script>
+</body>
+</html>
