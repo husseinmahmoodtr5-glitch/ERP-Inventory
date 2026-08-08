@@ -44,12 +44,17 @@ interface TreeItem {
 }
 
 interface Movement {
-  item_name: string;
+  id?: string;
+  date: string;
   type: 'IN' | 'OUT';
+  item_name: string;
   quantity: number;
+  unit: string;
+  doc_number?: string;
+  qc_status?: string;
+  notes?: string;
 }
 
-// دالة توحيد النصوص لتجاهل الهمزات والمسافات المخفية
 const normalizeText = (str: string) => {
   if (!str) return '';
   return str
@@ -88,11 +93,9 @@ export default function Production() {
   };
 
   const fetchInitialData = async () => {
-    // 1. جلب الوصفات
     const localBoms = localStorage.getItem('app_boms');
     if (localBoms) setBoms(JSON.parse(localBoms));
 
-    // 2. جلب عناصر الشجرة
     try {
       const { data: tData } = await supabase.from('inventory_tree').select('*').eq('is_active', true);
       if (tData && tData.length > 0) setTreeItems(tData as TreeItem[]);
@@ -100,7 +103,6 @@ export default function Production() {
       console.log('جلب الشجرة من التخزين المحلي');
     }
 
-    // 3. جلب الحركات (مع المعالجة الاحتياطية في حال كانت الداتا فارغة من السيرفر)
     let loadedMovements: Movement[] = [];
     try {
       const { data: mData } = await supabase.from('inventory_movements').select('*');
@@ -122,7 +124,6 @@ export default function Production() {
     localStorage.setItem('app_boms', JSON.stringify(updated));
   };
 
-  // حساب الرصيد المتوفر بدقة مع توحيد النصوص
   const getStock = (itemName: string) => {
     const targetNorm = normalizeText(itemName);
     const itemIn = movements
@@ -132,6 +133,52 @@ export default function Production() {
       .filter(m => normalizeText(m.item_name) === targetNorm && m.type === 'OUT')
       .reduce((a, c) => a + Number(c.quantity), 0);
     return itemIn - itemOut;
+  };
+
+  // دالة بدء الإنتاج والسحب الفعلي من المخزن
+  const handleStartProduction = async () => {
+    if (!selectedBomForCalc) return;
+
+    const confirmMsg = `هل أنت متأكد من تأكيد وبدء أمر الإنتاج رقم (${orderNumber}) لإنتاج ${targetQuantity.toLocaleString()} متر من (${selectedBomForCalc.product_name})؟\n\nسيتم خصم كافة المواد الخام المطلوبة تلقائياً من المخزن.`;
+
+    if (!window.confirm(confirmMsg)) return;
+
+    const todayDate = new Date().toISOString().split('T')[0];
+
+    // إنشاء حركات صادر مخزنية لكل مادة خامة في الوصفة
+    const newOutMovements: Movement[] = selectedBomForCalc.items.map(item => {
+      const netNeeded = item.quantity_per_meter * targetQuantity;
+      const grossNeeded = netNeeded * (1 + (item.waste_percent / 100));
+
+      return {
+        id: Date.now().toString() + Math.random().toString().slice(2, 6),
+        date: todayDate,
+        type: 'OUT',
+        item_name: item.material_name,
+        quantity: Number(grossNeeded.toFixed(3)),
+        unit: item.unit,
+        doc_number: orderNumber,
+        qc_status: 'مقبول (مطابق)',
+        notes: `صرف آلي لأمر إنتاج (${orderNumber}) - إنتاج ${targetQuantity.toLocaleString()} متر من ${selectedBomForCalc.product_name}`
+      };
+    });
+
+    // 1. الحفظ في قاعدة البيانات Supabase
+    try {
+      await supabase.from('inventory_movements').insert(newOutMovements);
+    } catch {
+      console.log('تعذر الحفظ في السيرفر، تم الاعتماد على التخزين المحلي');
+    }
+
+    // 2. التحديث في حالة الصفحة والتخزين المحلي
+    const updatedMovements = [...newOutMovements, ...movements];
+    setMovements(updatedMovements);
+    localStorage.setItem('app_inventory_movements', JSON.stringify(updatedMovements));
+
+    alert(`🚀 تم تأكيد أمر الإنتاج (${orderNumber}) بنجاح!\nوتم خصم جميع المواد الخام المطلوبة من المخزن.`);
+    
+    // إعادة توليد رقم أمر جديد
+    generateOrderNumber();
   };
 
   const toggleMaterialSelection = (materialName: string) => {
@@ -337,7 +384,8 @@ export default function Production() {
               <div className="mt-6 flex justify-end">
                 <button 
                   disabled={!canProduce}
-                  className={`px-8 py-3 rounded-xl font-bold text-lg flex items-center gap-2 shadow-lg transition-all ${canProduce ? 'bg-blue-600 hover:bg-blue-700 text-white hover:scale-105' : 'bg-slate-300 text-slate-500 cursor-not-allowed'}`}
+                  onClick={handleStartProduction}
+                  className={`px-8 py-3 rounded-xl font-bold text-lg flex items-center gap-2 shadow-lg transition-all ${canProduce ? 'bg-blue-600 hover:bg-blue-700 text-white hover:scale-105 cursor-pointer' : 'bg-slate-300 text-slate-500 cursor-not-allowed'}`}
                 >
                   <Play size={20} fill="currentColor" />
                   {canProduce ? 'تأكيد وبدء الإنتاج (سحب من المخزن)' : 'المخزون لا يكفي للإنتاج'}
@@ -360,7 +408,7 @@ export default function Production() {
                 resetBomModal();
                 setShowBomModal(true);
               }}
-              className="bg-slate-800 hover:bg-slate-900 text-white px-5 py-2.5 rounded-xl font-bold flex items-center gap-2 shadow-md transition"
+              className="bg-slate-800 hover:bg-slate-900 text-white px-5 py-2.5 rounded-xl font-bold flex items-center gap-2 shadow-md transition cursor-pointer"
             >
               <Plus size={20} /> إنشاء وصفة تصنيع جديدة
             </button>
@@ -426,7 +474,7 @@ export default function Production() {
                 <Settings className="text-blue-400" /> 
                 {bomStep === 1 ? 'الخطوة 1: تحديد المنتج والمواد الخام' : 'الخطوة 2: هندسة مقادير المتر الواحد'}
               </h3>
-              <button onClick={() => setShowBomModal(false)} className="text-slate-400 hover:text-white transition">
+              <button onClick={() => setShowBomModal(false)} className="text-slate-400 hover:text-white transition cursor-pointer">
                 <X size={24} />
               </button>
             </div>
@@ -531,15 +579,15 @@ export default function Production() {
             <div className="bg-slate-50 p-5 border-t border-slate-200 flex justify-between shrink-0">
               {bomStep === 1 ? (
                 <>
-                  <button onClick={() => setShowBomModal(false)} className="px-5 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-200 rounded-xl transition">إلغاء</button>
-                  <button onClick={proceedToBomFormula} className="px-6 py-2.5 text-sm font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-md transition flex items-center gap-2">
+                  <button onClick={() => setShowBomModal(false)} className="px-5 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-200 rounded-xl transition cursor-pointer">إلغاء</button>
+                  <button onClick={proceedToBomFormula} className="px-6 py-2.5 text-sm font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-md transition flex items-center gap-2 cursor-pointer">
                     التالي: هندسة المقادير
                   </button>
                 </>
               ) : (
                 <>
-                  <button onClick={() => setBomStep(1)} className="px-5 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-200 rounded-xl transition">رجوع</button>
-                  <button onClick={handleSaveBom} className="px-6 py-2.5 text-sm font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-md transition flex items-center gap-2">
+                  <button onClick={() => setBomStep(1)} className="px-5 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-200 rounded-xl transition cursor-pointer">رجوع</button>
+                  <button onClick={handleSaveBom} className="px-6 py-2.5 text-sm font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-md transition flex items-center gap-2 cursor-pointer">
                     <Save size={18} /> حفظ واعتماد الوصفة
                   </button>
                 </>
