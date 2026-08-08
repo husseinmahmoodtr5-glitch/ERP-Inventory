@@ -164,7 +164,7 @@ export default function InventoryTree() {
                       <div className="text-xs text-slate-500 mt-1 flex gap-4">
                         <span>وحدة القياس: <b>{item.unit}</b></span>
                         <span>الحد الأدنى: <b>{item.min_stock}</b></span>
-                        <span>التكلفة التقديرية: <b>{item.cost_price} $</b></span>
+                       <span>التكلفة التقديرية: <b>{item.cost_price.toLocaleString()} د.ع</b></span>
                       </div>
                     )}
                   </div>
