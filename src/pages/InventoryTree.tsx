@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { 
   FolderTree, Plus, ChevronRight, ChevronDown, Package, 
-  Layers, ShieldAlert 
+  Layers, ShieldAlert, Trash2, Edit 
 } from 'lucide-react';
 
 // تكييف رابط Supabase والـ Key مع متغيرات مشروعك البيئية
@@ -28,8 +28,11 @@ export default function InventoryTree() {
   const [expandedNodes, setExpandedNodes] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState<boolean>(true);
   const [showModal, setShowModal] = useState<boolean>(false);
+  
+  // حالات التعديل
+  const [isEditing, setIsEditing] = useState<boolean>(false);
+  const [editId, setEditId] = useState<string>('');
 
-  // نموذج الإضافة الجديد
   const [newItem, setNewItem] = useState({
     code: '',
     name: '',
@@ -63,54 +66,82 @@ export default function InventoryTree() {
     setExpandedNodes(prev => ({ ...prev, [id]: !prev[id] }));
   };
 
-  const handleAddItem = async (e: React.FormEvent) => {
+  // دالة الحفظ (تخدم الإضافة والتعديل معاً)
+  const handleSaveItem = async (e: React.FormEvent) => {
     e.preventDefault();
     const payload = {
       ...newItem,
       parent_id: newItem.parent_id === '' ? null : newItem.parent_id
     };
 
-    const { error } = await supabase.from('inventory_tree').insert([payload]);
-
-    if (!error) {
-      setShowModal(false);
-      fetchTreeData(); // تحديث الشجرة بعد الإضافة
+    if (isEditing) {
+      const { error } = await supabase.from('inventory_tree').update(payload).eq('id', editId);
+      if (!error) {
+        setShowModal(false);
+        fetchTreeData();
+      } else {
+        alert('حدث خطأ أثناء التعديل: ' + error.message);
+      }
     } else {
-      alert('حدث خطأ أثناء الإضافة: ' + error.message);
+      const { error } = await supabase.from('inventory_tree').insert([payload]);
+      if (!error) {
+        setShowModal(false);
+        fetchTreeData();
+      } else {
+        alert('حدث خطأ أثناء الإضافة: ' + error.message);
+      }
     }
   };
 
-  // دالة لفتح نافذة إضافة بند رئيسي جديد وتصفير البيانات
+  // دالة الحذف الذكية
+  const handleDelete = async (id: string, name: string) => {
+    // التأكد من عدم وجود فروع تابعة
+    const hasChildren = items.some(child => child.parent_id === id);
+    if (hasChildren) {
+      alert(`عذراً، لا يمكن حذف "${name}" لأنه يحتوي على مواد أو فروع داخله. يرجى حذف الفروع أولاً.`);
+      return;
+    }
+
+    if (window.confirm(`هل أنت متأكد من حذف "${name}" نهائياً؟ لا يمكن التراجع عن هذا الإجراء.`)) {
+      const { error } = await supabase.from('inventory_tree').delete().eq('id', id);
+      if (!error) {
+        fetchTreeData();
+      } else {
+        alert('حدث خطأ أثناء الحذف: ' + error.message);
+      }
+    }
+  };
+
+  // تصفير وفتح نافذة الإضافة
   const openNewMainCategoryModal = () => {
-    setNewItem({
-      code: '',
-      name: '',
-      type: 'category',
-      unit: '',
-      parent_id: '',
-      qc_required: false,
-      min_stock: 0,
-      cost_price: 0
-    });
+    setIsEditing(false);
+    setNewItem({ code: '', name: '', type: 'category', unit: '', parent_id: '', qc_required: false, min_stock: 0, cost_price: 0 });
     setShowModal(true);
   };
 
-  // دالة لفتح نافذة إضافة فرع تابع وتحديد الأب تلقائياً
   const openNewBranchModal = (parentId: string) => {
+    setIsEditing(false);
+    setNewItem({ code: '', name: '', type: 'raw_material', unit: 'كجم', parent_id: parentId, qc_required: false, min_stock: 0, cost_price: 0 });
+    setShowModal(true);
+  };
+
+  // فتح نافذة التعديل
+  const openEditModal = (item: InventoryItem) => {
+    setIsEditing(true);
+    setEditId(item.id);
     setNewItem({
-      code: '',
-      name: '',
-      type: 'raw_material',
-      unit: 'كجم',
-      parent_id: parentId,
-      qc_required: false,
-      min_stock: 0,
-      cost_price: 0
+      code: item.code,
+      name: item.name,
+      type: item.type,
+      unit: item.unit,
+      parent_id: item.parent_id || '',
+      qc_required: item.qc_required,
+      min_stock: item.min_stock,
+      cost_price: item.cost_price
     });
     setShowModal(true);
   };
 
-  // المساعدة في عرض الأيقونات حسب النوع
   const getTypeBadge = (type: string) => {
     switch (type) {
       case 'category': return <span className="px-2 py-1 bg-purple-100 text-purple-800 text-xs rounded-md font-semibold">فئة رئيسية</span>;
@@ -122,7 +153,6 @@ export default function InventoryTree() {
     }
   };
 
-  // بناء العرض الشجري التكراري
   const renderTree = (parentId: string | null = null, level = 0) => {
     const children = items.filter(item => item.parent_id === parentId);
     if (children.length === 0) return null;
@@ -164,18 +194,36 @@ export default function InventoryTree() {
                       <div className="text-xs text-slate-500 mt-1 flex gap-4">
                         <span>وحدة القياس: <b>{item.unit}</b></span>
                         <span>الحد الأدنى: <b>{item.min_stock}</b></span>
-                       <span>التكلفة التقديرية: <b>{item.cost_price.toLocaleString()} د.ع</b></span>
+                        <span>التكلفة التقديرية: <b>{item.cost_price.toLocaleString()} د.ع</b></span>
                       </div>
                     )}
                   </div>
                 </div>
 
-                <button 
-                  onClick={() => openNewBranchModal(item.id)}
-                  className="text-xs flex items-center gap-1 bg-slate-100 hover:bg-slate-200 text-slate-700 px-2 py-1 rounded transition"
-                >
-                  <Plus size={14} /> إضافة فرع
-                </button>
+                {/* أزرار التحكم: إضافة فرع، تعديل، حذف */}
+                <div className="flex items-center gap-1">
+                  <button 
+                    onClick={() => openNewBranchModal(item.id)}
+                    className="text-xs flex items-center gap-1 bg-slate-100 hover:bg-slate-200 text-slate-700 px-2 py-1.5 rounded transition font-medium"
+                    title="إضافة فرع داخله"
+                  >
+                    <Plus size={14} /> إضافة فرع
+                  </button>
+                  <button 
+                    onClick={() => openEditModal(item)}
+                    className="text-xs flex items-center gap-1 bg-blue-50 hover:bg-blue-100 text-blue-700 px-2 py-1.5 rounded transition font-medium"
+                    title="تعديل البيانات"
+                  >
+                    <Edit size={14} /> تعديل
+                  </button>
+                  <button 
+                    onClick={() => handleDelete(item.id, item.name)}
+                    className="text-xs flex items-center gap-1 bg-rose-50 hover:bg-rose-100 text-rose-700 px-2 py-1.5 rounded transition font-medium"
+                    title="حذف نهائي"
+                  >
+                    <Trash2 size={14} /> حذف
+                  </button>
+                </div>
               </div>
 
               {isExpanded && renderTree(item.id, level + 1)}
@@ -188,7 +236,6 @@ export default function InventoryTree() {
 
   return (
     <div dir="rtl" className="p-6 bg-slate-50 min-h-screen font-sans">
-      {/* الهيدر الأعلـى */}
       <div className="flex justify-between items-center mb-6">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
@@ -205,7 +252,6 @@ export default function InventoryTree() {
         </button>
       </div>
 
-      {/* منطقة عرض الشجرة */}
       {loading ? (
         <div className="text-center py-12 text-slate-500">جاري تحميل شجرة المخزون...</div>
       ) : items.length === 0 ? (
@@ -225,15 +271,16 @@ export default function InventoryTree() {
         </div>
       )}
 
-      {/* نافذة الإضافة (Modal) */}
+      {/* نافذة الإضافة والتعديل */}
       {showModal && (
         <div dir="rtl" className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6">
             <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2 border-b pb-3">
-              <Plus className="text-blue-600" /> إضافة بند جديد إلى الشجرة
+              {isEditing ? <Edit className="text-blue-600" /> : <Plus className="text-blue-600" />}
+              {isEditing ? 'تعديل بيانات البند' : 'إضافة بند جديد إلى الشجرة'}
             </h3>
 
-            <form onSubmit={handleAddItem} className="space-y-4">
+            <form onSubmit={handleSaveItem} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold text-slate-600 mb-1">اسم المادة / الفئة *</label>
                 <input 
@@ -336,7 +383,7 @@ export default function InventoryTree() {
                   type="submit"
                   className="px-4 py-2 text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-lg shadow-sm transition"
                 >
-                  حفظ في الشجرة
+                  {isEditing ? 'حفظ التعديلات' : 'حفظ في الشجرة'}
                 </button>
               </div>
             </form>
