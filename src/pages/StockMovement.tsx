@@ -11,7 +11,8 @@ import {
   Edit, 
   Trash2, 
   X,
-  FileText
+  FileText,
+  Filter
 } from 'lucide-react';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
@@ -45,6 +46,9 @@ export default function InventoryMovements() {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [filterType, setFilterType] = useState<'ALL' | 'IN' | 'OUT'>('ALL');
   
+  // فلتر المادة الجديد
+  const [materialFilter, setMaterialFilter] = useState<string>('ALL');
+  
   // Modal State
   const [showModal, setShowModal] = useState<boolean>(false);
   const [isEditing, setIsEditing] = useState<boolean>(false);
@@ -71,7 +75,6 @@ export default function InventoryMovements() {
   const fetchData = async () => {
     setLoading(true);
     
-    // جلب حركات المخزن
     try {
       const { data: movData } = await supabase
         .from('inventory_movements')
@@ -88,7 +91,6 @@ export default function InventoryMovements() {
       if (local) setMovements(JSON.parse(local));
     }
 
-    // جلب شجرة المخزون لاستخدام المواد غير المجلدات
     try {
       const { data: tData } = await supabase
         .from('inventory_tree')
@@ -109,7 +111,6 @@ export default function InventoryMovements() {
     localStorage.setItem('app_inventory_movements', JSON.stringify(updatedList));
   };
 
-  // حساب الرصيد المتوفر لمادة معينة
   const getItemStock = (itemName: string) => {
     const itemIn = movements.filter(m => m.item_name === itemName && m.type === 'IN').reduce((acc, c) => acc + Number(c.quantity), 0);
     const itemOut = movements.filter(m => m.item_name === itemName && m.type === 'OUT').reduce((acc, c) => acc + Number(c.quantity), 0);
@@ -152,7 +153,6 @@ export default function InventoryMovements() {
     setShowModal(true);
   };
 
-  // عند اختيار مادة من القائمة المنسدلة
   const handleItemSelect = (selectedName: string) => {
     const found = treeItems.find(t => t.name === selectedName);
     setFormData(prev => ({
@@ -175,7 +175,6 @@ export default function InventoryMovements() {
       return;
     }
 
-    // فحص منع السحب بالسالب في حالة الصادر
     if (formData.type === 'OUT' && !isEditing) {
       const currentStock = getItemStock(formData.item_name);
       if (formData.quantity > currentStock) {
@@ -213,27 +212,33 @@ export default function InventoryMovements() {
     }, 200);
   };
 
-  const totalIn = movements.filter(m => m.type === 'IN').reduce((acc, curr) => acc + Number(curr.quantity), 0);
-  const totalOut = movements.filter(m => m.type === 'OUT').reduce((acc, curr) => acc + Number(curr.quantity), 0);
-  const netBalance = totalIn - totalOut;
+  // استخراج قائمة المواد الفريدة الموجودة في الحركات لفلتر البحث
+  const uniqueMaterials = Array.from(new Set(movements.map(m => m.item_name))).filter(Boolean);
 
+  // الفلترة الشاملة (نوع، بحث، مادة)
   const filteredMovements = movements.filter(m => {
-    const matchesFilter = filterType === 'ALL' || m.type === filterType;
+    const matchesType = filterType === 'ALL' || m.type === filterType;
+    const matchesMaterial = materialFilter === 'ALL' || m.item_name === materialFilter;
     const query = searchQuery.toLowerCase();
     const matchesSearch = 
       (m.item_name && m.item_name.toLowerCase().includes(query)) ||
       (m.doc_number && m.doc_number.toLowerCase().includes(query)) ||
       (m.notes && m.notes.toLowerCase().includes(query));
-    return matchesFilter && matchesSearch;
+    return matchesType && matchesMaterial && matchesSearch;
   });
 
+  // الحسابات الديناميكية بناءً على الحركات المفلترة وليس كل الحركات
+  const displayIn = filteredMovements.filter(m => m.type === 'IN').reduce((acc, curr) => acc + Number(curr.quantity), 0);
+  const displayOut = filteredMovements.filter(m => m.type === 'OUT').reduce((acc, curr) => acc + Number(curr.quantity), 0);
+  const displayNet = displayIn - displayOut;
+
   const exportToCSV = () => {
-    if (movements.length === 0) {
+    if (filteredMovements.length === 0) {
       alert('لا توجد بيانات لتصديرها');
       return;
     }
     let csv = '\uFEFFالتاريخ,نوع الحركة,اسم المادة,الكمية,الوحدة,رقم المستند,فحص الجودة,الملاحظات\n';
-    movements.forEach(m => {
+    filteredMovements.forEach(m => {
       csv += `${m.date},${m.type === 'IN' ? 'وارد' : 'صادر'},"${m.item_name}",${m.quantity},${m.unit},"${m.doc_number || ''}","${m.qc_status || ''}","${m.notes || ''}"\n`;
     });
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -247,7 +252,6 @@ export default function InventoryMovements() {
   return (
     <div dir="rtl" className="p-6 bg-slate-50 min-h-screen font-sans">
       
-      {/* قسم الطباعة الفردية (يظهر فقط أثناء طباعة الإذن) */}
       {activeVoucher && (
         <div className="hidden print:block p-8 bg-white text-black font-sans">
           <div className="border-2 border-black p-6 rounded-lg">
@@ -308,9 +312,7 @@ export default function InventoryMovements() {
         </div>
       )}
 
-      {/* المحتوى الرئيسي للواجهة (يختفي عند الطباعة الفردية) */}
       <div className="print:hidden">
-        {/* Header */}
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">حركة المخزون</h1>
@@ -345,36 +347,40 @@ export default function InventoryMovements() {
           </div>
         </div>
 
-        {/* KPI Cards */}
+        {/* Dynamic KPI Cards */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex justify-between items-center">
             <div>
-              <p className="text-xs text-slate-500 font-semibold mb-1">إجمالي الوارد</p>
-              <p className="text-xl font-bold text-emerald-600">{totalIn.toLocaleString()} <span className="text-xs font-normal">وحدة</span></p>
+              <p className="text-xs text-slate-500 font-semibold mb-1">
+                {materialFilter === 'ALL' ? 'إجمالي الوارد العام' : 'وارد المادة المحددة'}
+              </p>
+              <p className="text-xl font-bold text-emerald-600">{displayIn.toLocaleString()} <span className="text-xs font-normal">وحدة</span></p>
             </div>
             <div className="p-3 bg-emerald-50 rounded-lg text-emerald-600"><ArrowDownLeft size={22} /></div>
           </div>
 
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex justify-between items-center">
             <div>
-              <p className="text-xs text-slate-500 font-semibold mb-1">إجمالي الصادر</p>
-              <p className="text-xl font-bold text-rose-600">{totalOut.toLocaleString()} <span className="text-xs font-normal">وحدة</span></p>
+              <p className="text-xs text-slate-500 font-semibold mb-1">
+                {materialFilter === 'ALL' ? 'إجمالي الصادر العام' : 'صادر المادة المحددة'}
+              </p>
+              <p className="text-xl font-bold text-rose-600">{displayOut.toLocaleString()} <span className="text-xs font-normal">وحدة</span></p>
             </div>
             <div className="p-3 bg-rose-50 rounded-lg text-rose-600"><ArrowUpRight size={22} /></div>
           </div>
 
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex justify-between items-center">
             <div>
-              <p className="text-xs text-slate-500 font-semibold mb-1">صافي حركة الرصيد</p>
-              <p className="text-xl font-bold text-blue-600">{netBalance.toLocaleString()} <span className="text-xs font-normal">وحدة</span></p>
+              <p className="text-xs text-slate-500 font-semibold mb-1">صافي الرصيد الحالي</p>
+              <p className="text-xl font-bold text-blue-600">{displayNet.toLocaleString()} <span className="text-xs font-normal">وحدة</span></p>
             </div>
             <div className="p-3 bg-blue-50 rounded-lg text-blue-600"><Scale size={22} /></div>
           </div>
 
           <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex justify-between items-center">
             <div>
-              <p className="text-xs text-slate-500 font-semibold mb-1">إجمالي الحركات</p>
-              <p className="text-xl font-bold text-purple-600">{movements.length} <span className="text-xs font-normal">عملية</span></p>
+              <p className="text-xs text-slate-500 font-semibold mb-1">الحركات المعروضة</p>
+              <p className="text-xl font-bold text-purple-600">{filteredMovements.length} <span className="text-xs font-normal">عملية</span></p>
             </div>
             <div className="p-3 bg-purple-50 rounded-lg text-purple-600"><ListCheck size={22} /></div>
           </div>
@@ -386,11 +392,26 @@ export default function InventoryMovements() {
             <Search size={18} className="absolute right-3 top-3 text-slate-400" />
             <input 
               type="text"
-              placeholder="ابحث باسم المادة، رقم المستند، أو الملاحظات..."
+              placeholder="ابحث برقم المستند أو الملاحظات..."
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               className="w-full pr-10 pl-4 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
             />
+          </div>
+
+          {/* فلتر اختيار المادة */}
+          <div className="flex-1 flex items-center relative">
+            <Filter size={18} className="absolute right-3 text-slate-400 pointer-events-none" />
+            <select
+              value={materialFilter}
+              onChange={e => setMaterialFilter(e.target.value)}
+              className="w-full pr-10 pl-4 py-2 border border-slate-300 rounded-lg text-sm bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none font-semibold text-slate-700 cursor-pointer"
+            >
+              <option value="ALL">جميع المواد (عرض الكل)</option>
+              {uniqueMaterials.map(mat => (
+                <option key={mat} value={mat}>{mat}</option>
+              ))}
+            </select>
           </div>
 
           <div className="flex gap-2">
@@ -495,7 +516,6 @@ export default function InventoryMovements() {
           </div>
         </div>
 
-        {/* Modal Form */}
         {showModal && (
           <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4 z-50">
             <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-6">
@@ -533,7 +553,6 @@ export default function InventoryMovements() {
                   </div>
                 </div>
 
-                {/* اختيار المادة من قائمة الشجرة المنسدلة */}
                 <div>
                   <label className="block text-xs font-semibold text-slate-600 mb-1">اختيار المادة من شجرة المخزن *</label>
                   {treeItems.length > 0 ? (
