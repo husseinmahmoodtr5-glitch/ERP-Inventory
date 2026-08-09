@@ -183,14 +183,17 @@ export default function Accounting() {
     setIsModalOpen(true);
   };
 
+  // 🔴 هنا تم حل مشكلة TypeScript التي ظهرت في الصورة
   const handleLineChange = (index: number, field: keyof JournalLine, value: string | number) => {
     const updatedLines = [...newLines];
     if (field === 'account') {
       const selectedAcc = accountsList.find(a => a.code === value);
       updatedLines[index].account = value as string;
       updatedLines[index].name = selectedAcc ? selectedAcc.name : '';
-    } else {
-      updatedLines[index][field] = Number(value) || 0;
+    } else if (field === 'debit') {
+      updatedLines[index].debit = Number(value) || 0;
+    } else if (field === 'credit') {
+      updatedLines[index].credit = Number(value) || 0;
     }
     setNewLines(updatedLines);
   };
