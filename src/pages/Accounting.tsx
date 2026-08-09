@@ -13,10 +13,11 @@ import {
   UploadCloud,
   File,
   Search,
-  Printer
+  Printer,
+  Trash2,
+  Edit3
 } from 'lucide-react';
 
-// الاتصال بـ Supabase نفس الطريقة المستخدمة في شجرة المخازن
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
@@ -99,6 +100,22 @@ export default function Accounting() {
       }
     } catch (error) {
       console.error('خطأ في جلب القيود:', error);
+    }
+  };
+
+  const handleDeleteEntry = async (id: string) => {
+    if (!window.confirm('هل أنت متأكد من حذف هذا القيد نهائياً من قاعدة البيانات؟')) return;
+
+    try {
+      const { error } = await supabase
+        .from('journal_entries')
+        .delete()
+        .eq('id', id);
+
+      if (error) throw error;
+      fetchEntries();
+    } catch (error: any) {
+      alert('حدث خطأ أثناء الحذف: ' + error.message);
     }
   };
 
@@ -370,13 +387,20 @@ export default function Accounting() {
                     <span className="bg-blue-600 px-3 py-1 rounded-lg text-xs font-mono font-bold">{entry.id}</span>
                     <span className="font-bold text-sm">المرجع: {entry.reference}</span>
                   </div>
-                  <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-3">
                     <span className="text-xs text-slate-300 font-mono">{entry.date}</span>
                     <button 
                       onClick={() => handlePrintEntry(entry)}
                       className="bg-slate-700 hover:bg-blue-600 transition p-2 rounded-lg flex items-center gap-1 text-xs font-bold"
                     >
                       <Printer size={14} /> طباعة
+                    </button>
+                    <button 
+                      onClick={() => handleDeleteEntry(entry.id)}
+                      className="bg-rose-600/80 hover:bg-rose-600 transition p-2 rounded-lg flex items-center gap-1 text-xs font-bold text-white"
+                      title="حذف القيد"
+                    >
+                      <Trash2 size={14} /> حذف
                     </button>
                   </div>
                 </div>
