@@ -19,12 +19,10 @@ import {
   CornerDownLeft
 } from 'lucide-react';
 
-// إعدادات قاعدة البيانات Supabase
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-// الواجهات (Interfaces)
 interface JournalLine {
   account: string;
   name: string;
@@ -38,8 +36,6 @@ interface JournalEntry {
   reference: string;
   description: string;
   lines: JournalLine[];
-  pdf_url?: string | null;
-  pdf_name?: string | null;
 }
 
 interface AccountItem {
@@ -58,11 +54,9 @@ export default function Accounting() {
   const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(false);
   
-  // سعر الصرف الوهمي التفاعلي
   const [exchangeRate, setExchangeRate] = useState<number>(148750);
   const [rateChange, setRateChange] = useState<'up' | 'down' | 'stable'>('stable');
 
-  // حالات القيود المحاسبية
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isPreviewMode, setIsPreviewMode] = useState(false);
   const [newReference, setNewReference] = useState('');
@@ -71,9 +65,7 @@ export default function Accounting() {
     { account: '', name: '', debit: 0, credit: 0 },
     { account: '', name: '', debit: 0, credit: 0 }
   ]);
-  const [selectedPdf, setSelectedPdf] = useState<File | null>(null);
 
-  // حالات شجرة الحسابات
   const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
   const [editingAccount, setEditingAccount] = useState<AccountItem | null>(null);
   const [accCode, setAccCode] = useState('');
@@ -81,7 +73,6 @@ export default function Accounting() {
   const [accType, setAccType] = useState('أصول متداولة');
   const [accParent, setAccParent] = useState('');
 
-  // تأثيرات تغيير سعر الصرف
   useEffect(() => {
     const interval = setInterval(() => {
       setExchangeRate(prev => {
@@ -97,7 +88,6 @@ export default function Accounting() {
     return () => clearInterval(interval);
   }, []);
 
-  // جلب البيانات عند التحميل
   useEffect(() => {
     fetchEntries();
     fetchAccounts();
@@ -108,7 +98,7 @@ export default function Accounting() {
       const { data, error } = await supabase.from('journal_entries').select('*').order('created_at', { ascending: false });
       if (!error && data) setEntries(data);
     } catch (error) {
-      console.error('خطأ في جلب القيود:', error);
+      console.error('Error fetching entries:', error);
     }
   };
 
@@ -132,9 +122,6 @@ export default function Accounting() {
     }
   };
 
-  // ----------------------------------------------------------------
-  // وظائف شجرة الحسابات
-  // ----------------------------------------------------------------
   const handleSaveAccount = (e: React.FormEvent) => {
     e.preventDefault();
     if (!accCode || !accName) return alert('الرجاء تعبئة الحقول الأساسية');
@@ -188,14 +175,10 @@ export default function Accounting() {
 
   const hierarchicalAccounts = useMemo(() => buildTree(accountsList), [accountsList]);
 
-  // ----------------------------------------------------------------
-  // وظائف القيود المحاسبية
-  // ----------------------------------------------------------------
   const handleOpenNewEntryModal = () => {
     setNewReference(`JV-${new Date().getFullYear()}-${String(entries.length + 1).padStart(3, '0')}`);
     setNewDescription('');
     setNewLines([{ account: '', name: '', debit: 0, credit: 0 }, { account: '', name: '', debit: 0, credit: 0 }]);
-    setSelectedPdf(null);
     setIsPreviewMode(false);
     setIsModalOpen(true);
   };
@@ -247,9 +230,6 @@ export default function Accounting() {
     }
   };
 
-  // ----------------------------------------------------------------
-  // وظيفة الطباعة المباشرة المرتبة (تفتح نافذة الطباعة للنظام)
-  // ----------------------------------------------------------------
   const handlePrintEntry = (entry: JournalEntry) => {
     const totalDeb = entry.lines.reduce((sum, line) => sum + line.debit, 0);
     const totalCred = entry.lines.reduce((sum, line) => sum + line.credit, 0);
@@ -348,7 +328,11 @@ export default function Accounting() {
     printWindow.document.close();
   };
 
-  const filteredEntries = entries.filter(e => e.reference.includes(searchQuery) || e.description.includes(searchQuery));
+  // Safe filtering logic to prevent crashes if reference or description is null
+  const filteredEntries = entries.filter(e => 
+    (e.reference || '').toLowerCase().includes(searchQuery.toLowerCase()) || 
+    (e.description || '').toLowerCase().includes(searchQuery.toLowerCase())
+  );
 
   return (
     <div dir="rtl" className="p-4 md:p-6 bg-slate-50 min-h-screen font-sans">
