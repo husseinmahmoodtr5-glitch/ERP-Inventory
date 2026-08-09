@@ -328,7 +328,6 @@ export default function Accounting() {
     printWindow.document.close();
   };
 
-  // Safe filtering logic to prevent crashes if reference or description is null
   const filteredEntries = entries.filter(e => 
     (e.reference || '').toLowerCase().includes(searchQuery.toLowerCase()) || 
     (e.description || '').toLowerCase().includes(searchQuery.toLowerCase())
