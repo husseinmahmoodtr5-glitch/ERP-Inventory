@@ -15,6 +15,8 @@ import {
   Search,
   Printer,
   Trash2,
+  FileDown,
+  Eye,
   Edit3
 } from 'lucide-react';
 
@@ -49,6 +51,7 @@ export default function Accounting() {
   const [rateChange, setRateChange] = useState<'up' | 'down' | 'stable'>('stable');
 
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isPreviewMode, setIsPreviewMode] = useState(false);
   const [newReference, setNewReference] = useState('');
   const [newDescription, setNewDescription] = useState('');
   const [newLines, setNewLines] = useState<JournalLine[]>([
@@ -117,6 +120,20 @@ export default function Accounting() {
     } catch (error: any) {
       alert('حدث خطأ أثناء الحذف: ' + error.message);
     }
+  };
+
+  const handleOpenNewEntryModal = () => {
+    const currentYear = new Date().getFullYear();
+    const nextNumber = String(entries.length + 1).padStart(3, '0');
+    setNewReference(`JV-${currentYear}-${nextNumber}`);
+    setNewDescription('');
+    setNewLines([
+      { account: '', name: '', debit: 0, credit: 0 },
+      { account: '', name: '', debit: 0, credit: 0 }
+    ]);
+    setSelectedPdf(null);
+    setIsPreviewMode(false);
+    setIsModalOpen(true);
   };
 
   const handleAddLine = () => {
@@ -188,11 +205,6 @@ export default function Accounting() {
       if (insertError) throw insertError;
 
       await fetchEntries();
-
-      setNewReference('');
-      setNewDescription('');
-      setNewLines([{ account: '', name: '', debit: 0, credit: 0 }, { account: '', name: '', debit: 0, credit: 0 }]);
-      setSelectedPdf(null);
       setIsModalOpen(false);
     } catch (error: any) {
       alert('حدث خطأ أثناء الحفظ: ' + error.message);
@@ -285,6 +297,74 @@ export default function Accounting() {
     }
   };
 
+  const handleExportWord = (entry: JournalEntry) => {
+    const totalDeb = entry.lines.reduce((sum, line) => sum + line.debit, 0);
+    const totalCred = entry.lines.reduce((sum, line) => sum + line.credit, 0);
+
+    const header = "<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'><title>سند قيد</title></head><body>";
+    const footer = "</body></html>";
+    
+    const sourceHTML = header + `
+      <div dir="rtl" style="font-family: 'Arial';">
+        <h1 style="color: #1e293b; text-align: center; border-bottom: 2px solid #3b82f6; padding-bottom: 10px;">سند قيد يومية</h1>
+        <table style="width: 100%; margin-bottom: 20px;">
+          <tr>
+            <td><strong>رقم القيد:</strong> ${entry.id}</td>
+            <td style="text-align: left;"><strong>التاريخ:</strong> ${entry.date}</td>
+          </tr>
+          <tr>
+            <td><strong>المرجع:</strong> ${entry.reference}</td>
+            <td style="text-align: left;"></td>
+          </tr>
+        </table>
+        
+        <div style="background-color: #f8fafc; padding: 15px; border: 1px solid #e2e8f0; margin-bottom: 20px;">
+          <strong>بيان القيد:</strong> ${entry.description}
+        </div>
+        
+        <table border="1" style="width: 100%; border-collapse: collapse; text-align: right; margin-bottom: 20px;">
+          <thead style="background-color: #f1f5f9;">
+            <tr>
+              <th style="padding: 10px;">رقم الحساب</th>
+              <th style="padding: 10px;">اسم الحساب</th>
+              <th style="padding: 10px; text-align: center;">مدين</th>
+              <th style="padding: 10px; text-align: center;">دائن</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${entry.lines.map(line => `
+              <tr>
+                <td style="padding: 10px;">${line.account}</td>
+                <td style="padding: 10px;">${line.name}</td>
+                <td style="padding: 10px; text-align: center; color: green;">${line.debit > 0 ? line.debit.toLocaleString() : '-'}</td>
+                <td style="padding: 10px; text-align: center; color: red;">${line.credit > 0 ? line.credit.toLocaleString() : '-'}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+        
+        <table style="width: 100%; font-weight: bold; border-top: 2px solid #3b82f6; padding-top: 15px;">
+          <tr>
+            <td>الإجمالي:</td>
+            <td style="text-align: left;">
+              <span style="color: green; margin-left: 20px;">مدين: ${totalDeb.toLocaleString()}</span>
+              <span style="color: red;">دائن: ${totalCred.toLocaleString()}</span>
+            </td>
+          </tr>
+        </table>
+      </div>
+    ` + footer;
+
+    const blob = new Blob(['\ufeff', sourceHTML], { type: 'application/msword' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `قيد_${entry.id}.doc`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   const filteredEntries = entries.filter(entry => 
     entry.reference?.toLowerCase().includes(searchQuery.toLowerCase()) || 
     entry.description?.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -318,7 +398,7 @@ export default function Accounting() {
           </div>
           
           <button 
-            onClick={() => setIsModalOpen(true)}
+            onClick={handleOpenNewEntryModal}
             className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition flex items-center gap-2 w-full md:w-auto justify-center shadow-md"
           >
             <PlusCircle size={18} /> قيد / سند جديد
@@ -389,12 +469,22 @@ export default function Accounting() {
                   </div>
                   <div className="flex items-center gap-3">
                     <span className="text-xs text-slate-300 font-mono">{entry.date}</span>
+                    
+                    <button 
+                      onClick={() => handleExportWord(entry)}
+                      className="bg-indigo-600 hover:bg-indigo-500 transition p-2 rounded-lg flex items-center gap-1 text-xs font-bold"
+                      title="تصدير إلى Word"
+                    >
+                      <FileDown size={14} /> Word
+                    </button>
+
                     <button 
                       onClick={() => handlePrintEntry(entry)}
                       className="bg-slate-700 hover:bg-blue-600 transition p-2 rounded-lg flex items-center gap-1 text-xs font-bold"
                     >
                       <Printer size={14} /> طباعة
                     </button>
+
                     <button 
                       onClick={() => handleDeleteEntry(entry.id)}
                       className="bg-rose-600/80 hover:bg-rose-600 transition p-2 rounded-lg flex items-center gap-1 text-xs font-bold text-white"
@@ -495,124 +585,169 @@ export default function Accounting() {
               <X size={20} />
             </button>
 
-            <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
-              <PlusCircle className="text-blue-600" size={20} /> إنشاء قيد / سند محاسبي جديد في Supabase
-            </h3>
+            <div className="flex justify-between items-center mb-6 pr-8">
+              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
+                <PlusCircle className="text-blue-600" size={20} /> إنشاء قيد / سند محاسبي جديد
+              </h3>
+              
+              <button
+                onClick={() => setIsPreviewMode(!isPreviewMode)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-bold transition ${isPreviewMode ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+              >
+                {isPreviewMode ? <Edit3 size={16} /> : <Eye size={16} />}
+                {isPreviewMode ? 'العودة للتحرير' : 'معاينة القيد'}
+              </button>
+            </div>
 
-            <form onSubmit={handleSubmitEntry} className="space-y-4">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-600 mb-1">المرجع / رقم السند</label>
-                  <input 
-                    type="text" 
-                    placeholder="مثال: REC-2026-001"
-                    value={newReference}
-                    onChange={(e) => setNewReference(e.target.value)}
-                    className="w-full p-2.5 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    required
-                  />
+            {isPreviewMode ? (
+              <div className="space-y-4 border-2 border-slate-100 rounded-xl p-6 bg-slate-50">
+                <div className="text-center border-b border-slate-200 pb-4 mb-4">
+                  <h4 className="font-bold text-xl text-slate-800">معاينة السند المحاسبي</h4>
+                  <p className="text-sm text-slate-500 mt-1">المرجع: {newReference}</p>
                 </div>
-                <div>
-                  <label className="block text-xs font-bold text-slate-600 mb-1">بيان القيد / الوصف</label>
-                  <input 
-                    type="text" 
-                    placeholder="شرح العملية المحاسبية والتكاليف..."
-                    value={newDescription}
-                    onChange={(e) => setNewDescription(e.target.value)}
-                    className="w-full p-2.5 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    required
-                  />
+                <div className="bg-white p-4 rounded-lg border border-slate-200">
+                  <p className="text-sm font-bold text-slate-700">البيان: {newDescription || <span className="text-slate-400">لم يتم إدخال وصف</span>}</p>
+                </div>
+                <table className="w-full text-right text-sm bg-white rounded-lg overflow-hidden border border-slate-200">
+                  <thead className="bg-slate-800 text-white">
+                    <tr>
+                      <th className="p-2 text-center">مدين</th>
+                      <th className="p-2 text-center">دائن</th>
+                      <th className="p-2">الحساب</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {newLines.filter(l => l.account !== '').map((line, idx) => (
+                      <tr key={idx}>
+                        <td className="p-2 text-center font-mono text-emerald-600 font-bold">{line.debit > 0 ? line.debit : '-'}</td>
+                        <td className="p-2 text-center font-mono text-rose-600 font-bold">{line.credit > 0 ? line.credit : '-'}</td>
+                        <td className="p-2 font-bold">{line.name} <span className="text-slate-400 text-xs">({line.account})</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div className="flex justify-between font-bold text-sm bg-slate-200 p-3 rounded-lg">
+                  <div className="text-emerald-700">إجمالي المدين: {totalDebit}</div>
+                  <div className="text-rose-700">إجمالي الدائن: {totalCredit}</div>
                 </div>
               </div>
-
-              <div className="space-y-2">
-                <label className="block text-xs font-bold text-slate-600">تفاصيل أطراف القيد (مدين / دائن)</label>
-                {newLines.map((line, idx) => (
-                  <div key={idx} className="flex items-center gap-2 bg-slate-50 p-2 rounded-xl border border-slate-200">
-                    <select 
-                      value={line.account}
-                      onChange={(e) => handleLineChange(idx, 'account', e.target.value)}
-                      className="flex-2 p-2 border border-slate-300 rounded-lg text-sm bg-white"
+            ) : (
+              <form onSubmit={handleSubmitEntry} className="space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1">المرجع / رقم السند (تلقائي)</label>
+                    <input 
+                      type="text" 
+                      placeholder="مثال: JV-2026-001"
+                      value={newReference}
+                      onChange={(e) => setNewReference(e.target.value)}
+                      className="w-full p-2.5 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
                       required
-                    >
-                      <option value="">اختر الحساب...</option>
-                      {chartOfAccounts.map(a => (
-                        <option key={a.code} value={a.code}>{a.code} - {a.name}</option>
-                      ))}
-                    </select>
-
-                    <input 
-                      type="number" 
-                      placeholder="مدين" 
-                      value={line.debit || ''}
-                      onChange={(e) => handleLineChange(idx, 'debit', e.target.value)}
-                      className="w-28 p-2 border border-slate-300 rounded-lg text-sm text-center font-mono"
-                    />
-
-                    <input 
-                      type="number" 
-                      placeholder="دائن" 
-                      value={line.credit || ''}
-                      onChange={(e) => handleLineChange(idx, 'credit', e.target.value)}
-                      className="w-28 p-2 border border-slate-300 rounded-lg text-sm text-center font-mono"
                     />
                   </div>
-                ))}
+                  <div>
+                    <label className="block text-xs font-bold text-slate-600 mb-1">بيان القيد / الوصف</label>
+                    <input 
+                      type="text" 
+                      placeholder="شرح العملية المحاسبية والتكاليف..."
+                      value={newDescription}
+                      onChange={(e) => setNewDescription(e.target.value)}
+                      className="w-full p-2.5 border border-slate-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      required
+                    />
+                  </div>
+                </div>
 
-                <button 
-                  type="button" 
-                  onClick={handleAddLine}
-                  className="text-xs font-bold text-blue-600 hover:underline flex items-center gap-1 mt-1"
-                >
-                  + إضافة طرف آخر للقيد
-                </button>
-              </div>
+                <div className="space-y-2">
+                  <label className="block text-xs font-bold text-slate-600">تفاصيل أطراف القيد (مدين / دائن)</label>
+                  {newLines.map((line, idx) => (
+                    <div key={idx} className="flex flex-col md:flex-row items-center gap-2 bg-slate-50 p-2 rounded-xl border border-slate-200">
+                      <select 
+                        value={line.account}
+                        onChange={(e) => handleLineChange(idx, 'account', e.target.value)}
+                        className="w-full md:flex-2 p-2 border border-slate-300 rounded-lg text-sm bg-white"
+                        required
+                      >
+                        <option value="">اختر الحساب...</option>
+                        {chartOfAccounts.map(a => (
+                          <option key={a.code} value={a.code}>{a.code} - {a.name}</option>
+                        ))}
+                      </select>
 
-              <div className="flex justify-between items-center p-3 bg-slate-100 rounded-xl text-sm font-mono font-bold">
-                <div>إجمالي المدين: <span className="text-emerald-600">{totalDebit.toFixed(2)}</span></div>
-                <div>إجمالي الدائن: <span className="text-rose-600">{totalCredit.toFixed(2)}</span></div>
-                <div>
-                  {isBalanced ? (
-                    <span className="text-xs bg-emerald-100 text-emerald-800 px-2 py-1 rounded">متوازن</span>
-                  ) : (
-                    <span className="text-xs bg-rose-100 text-rose-800 px-2 py-1 rounded">غير متوازن</span>
+                      <div className="flex w-full md:w-auto gap-2">
+                        <input 
+                          type="number" 
+                          placeholder="مدين" 
+                          value={line.debit || ''}
+                          onChange={(e) => handleLineChange(idx, 'debit', e.target.value)}
+                          className="w-full md:w-28 p-2 border border-slate-300 rounded-lg text-sm text-center font-mono"
+                        />
+                        <input 
+                          type="number" 
+                          placeholder="دائن" 
+                          value={line.credit || ''}
+                          onChange={(e) => handleLineChange(idx, 'credit', e.target.value)}
+                          className="w-full md:w-28 p-2 border border-slate-300 rounded-lg text-sm text-center font-mono"
+                        />
+                      </div>
+                    </div>
+                  ))}
+
+                  <button 
+                    type="button" 
+                    onClick={handleAddLine}
+                    className="text-xs font-bold text-blue-600 hover:underline flex items-center gap-1 mt-1"
+                  >
+                    + إضافة طرف آخر للقيد
+                  </button>
+                </div>
+
+                <div className="flex justify-between items-center p-3 bg-slate-100 rounded-xl text-sm font-mono font-bold">
+                  <div>إجمالي المدين: <span className="text-emerald-600">{totalDebit.toFixed(2)}</span></div>
+                  <div>إجمالي الدائن: <span className="text-rose-600">{totalCredit.toFixed(2)}</span></div>
+                  <div>
+                    {isBalanced ? (
+                      <span className="text-xs bg-emerald-100 text-emerald-800 px-2 py-1 rounded">متوازن</span>
+                    ) : (
+                      <span className="text-xs bg-rose-100 text-rose-800 px-2 py-1 rounded">غير متوازن</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="border-2 border-dashed border-slate-300 p-4 rounded-xl text-center bg-slate-50">
+                  <UploadCloud className="mx-auto text-slate-400 mb-1" size={28} />
+                  <label className="cursor-pointer text-xs font-bold text-blue-600 hover:underline">
+                    انقر هنا لرفع فاتورة PDF وحفظها في سحاب Supabase Storage
+                    <input 
+                      type="file" 
+                      accept=".pdf" 
+                      onChange={(e) => setSelectedPdf(e.target.files ? e.target.files[0] : null)}
+                      className="hidden" 
+                    />
+                  </label>
+                  {selectedPdf && (
+                    <p className="text-xs text-emerald-600 font-bold mt-1">تم اختيار: {selectedPdf.name}</p>
                   )}
                 </div>
-              </div>
+              </form>
+            )}
 
-              <div className="border-2 border-dashed border-slate-300 p-4 rounded-xl text-center bg-slate-50">
-                <UploadCloud className="mx-auto text-slate-400 mb-1" size={28} />
-                <label className="cursor-pointer text-xs font-bold text-blue-600 hover:underline">
-                  انقر هنا لرفع فاتورة PDF وحفظها في سحاب Supabase Storage
-                  <input 
-                    type="file" 
-                    accept=".pdf" 
-                    onChange={(e) => setSelectedPdf(e.target.files ? e.target.files[0] : null)}
-                    className="hidden" 
-                  />
-                </label>
-                {selectedPdf && (
-                  <p className="text-xs text-emerald-600 font-bold mt-1">تم اختيار: {selectedPdf.name}</p>
-                )}
-              </div>
-
-              <div className="flex justify-end gap-2 pt-2">
-                <button 
-                  type="button" 
-                  onClick={() => setIsModalOpen(false)}
-                  className="px-4 py-2 rounded-xl text-sm font-bold bg-slate-200 text-slate-700 hover:bg-slate-300"
-                >
-                  إلغاء
-                </button>
-                <button 
-                  type="submit" 
-                  disabled={!isBalanced || loading}
-                  className={`px-5 py-2 rounded-xl text-sm font-bold text-white transition ${isBalanced && !loading ? 'bg-blue-600 hover:bg-blue-700' : 'bg-slate-400 cursor-not-allowed'}`}
-                >
-                  {loading ? 'جاري الحفظ والرفع...' : 'حفظ وتأكيد القيد في الداتا بيس'}
-                </button>
-              </div>
-            </form>
+            <div className="flex justify-end gap-2 pt-4 border-t border-slate-100 mt-4">
+              <button 
+                type="button" 
+                onClick={() => setIsModalOpen(false)}
+                className="px-4 py-2 rounded-xl text-sm font-bold bg-slate-200 text-slate-700 hover:bg-slate-300"
+              >
+                إلغاء
+              </button>
+              <button 
+                onClick={handleSubmitEntry}
+                disabled={!isBalanced || loading || isPreviewMode}
+                className={`px-5 py-2 rounded-xl text-sm font-bold text-white transition ${isBalanced && !loading && !isPreviewMode ? 'bg-blue-600 hover:bg-blue-700' : 'bg-slate-400 cursor-not-allowed'}`}
+              >
+                {loading ? 'جاري الحفظ والرفع...' : 'حفظ وتأكيد القيد في الداتا بيس'}
+              </button>
+            </div>
           </div>
         </div>
       )}
