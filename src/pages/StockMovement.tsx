@@ -328,6 +328,12 @@ export default function StockMovement() {
     a.click();
   };
 
+  // الدالة الجديدة التي تمت إضافتها للطباعة
+  const printVoucher = (voucher: Movement) => {
+    setActiveVoucher(voucher);
+    setTimeout(() => window.print(), 100);
+  };
+
   return (
     <div dir="rtl" className="p-6 bg-slate-50 min-h-screen font-sans pb-24">
       

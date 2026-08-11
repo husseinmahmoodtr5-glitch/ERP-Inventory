@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import React, { useState, ReactElement } from 'react';
 import { 
   LayoutDashboard, 
   ArrowLeftRight, 
@@ -16,7 +16,7 @@ import Reports from '@/pages/Reports';
 
 type Tab = 'dashboard' | 'movement' | 'production' | 'accounting' | 'reports';
 
-const NAV: { id: Tab; label: string; icon: JSX.Element }[] = [
+const NAV: { id: Tab; label: string; icon: ReactElement }[] = [
   { id: 'dashboard', label: 'لوحة التحكم', icon: <LayoutDashboard size={18} /> },
   { id: 'movement', label: 'إدارة المخازن', icon: <ArrowLeftRight size={18} /> },
   { id: 'production', label: 'الإنتاج', icon: <Factory size={18} /> },
