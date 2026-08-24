@@ -314,20 +314,33 @@ export default function QuantumWarehouse() {
       }
     }
 
+    // 🚀 التعديل الهام هنا: تم إزالة حقل source و recipient لمنع خطأ قاعدة البيانات
     const payloadInbound = {
-      transaction_date: moveForm.date, warehouse_name: moveForm.warehouse_name,
+      transaction_date: moveForm.date, 
+      warehouse_name: moveForm.warehouse_name,
       warehouse_code: safeWarehouses.find(w => w?.warehouse_name === moveForm.warehouse_name)?.warehouse_code || null,
-      material_name: moveForm.material_name, material_code: selectedMat?.material_code || null, unit: selectedMat?.unit || null, 
-      quantity_received: moveForm.quantity, reels_received: moveForm.reels,
-      source: '', reference_or_notes: moveForm.notes, qc_status: moveForm.qc_status, entry_number: moveForm.doc_number
+      material_name: moveForm.material_name, 
+      material_code: selectedMat?.material_code || null, 
+      unit: selectedMat?.unit || null, 
+      quantity_received: moveForm.quantity, 
+      reels_received: moveForm.reels,
+      reference_or_notes: moveForm.notes, 
+      qc_status: moveForm.qc_status, 
+      entry_number: moveForm.doc_number
     };
 
     const payloadOutbound = {
-      transaction_date: moveForm.date, warehouse_name: moveForm.warehouse_name,
+      transaction_date: moveForm.date, 
+      warehouse_name: moveForm.warehouse_name,
       warehouse_code: safeWarehouses.find(w => w?.warehouse_name === moveForm.warehouse_name)?.warehouse_code || null,
-      material_name: moveForm.material_name, material_code: selectedMat?.material_code || null, unit: selectedMat?.unit || null, 
-      quantity_issued: moveForm.quantity, reels_issued: moveForm.reels,
-      recipient: '', notes: moveForm.notes, qc_status: moveForm.qc_status, entry_number: moveForm.doc_number
+      material_name: moveForm.material_name, 
+      material_code: selectedMat?.material_code || null, 
+      unit: selectedMat?.unit || null, 
+      quantity_issued: moveForm.quantity, 
+      reels_issued: moveForm.reels,
+      notes: moveForm.notes, 
+      qc_status: moveForm.qc_status, 
+      entry_number: moveForm.doc_number
     };
 
     try {
