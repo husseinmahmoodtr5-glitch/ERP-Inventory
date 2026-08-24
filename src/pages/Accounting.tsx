@@ -1,25 +1,9 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { 
-  Calculator, 
-  ArrowLeftRight, 
-  FileText, 
-  DollarSign, 
-  TrendingUp, 
-  CheckCircle2,
-  PlusCircle,
-  X,
-  Search,
-  Trash2,
-  Printer,
-  Eye,
-  Edit3,
-  FolderTree,
-  Edit,
-  CornerDownLeft,
-  BarChart3,
-  Download,
-  ChevronDown
+  Calculator, ArrowLeftRight, FileText, DollarSign, TrendingUp, CheckCircle2,
+  PlusCircle, X, Search, Trash2, Printer, Eye, Edit3, FolderTree, Edit,
+  CornerDownLeft, BarChart3, Download, ChevronDown, Bell
 } from 'lucide-react';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
@@ -51,9 +35,18 @@ interface AccountItem {
   is_active: boolean;
 }
 
+// واجهة الإشعارات الواردة لقسم المحاسبة
+interface NotificationItem {
+  id: number;
+  message: string;
+  reference: string;
+  amount: number;
+  isRead: boolean;
+  date: string;
+}
+
 // -----------------------------------------------------------------------------
-// Component: القائمة المنسدلة الاحترافية القابلة للبحث (Custom Searchable Dropdown)
-// تم التعديل لعدم مقاطعة المستخدم أثناء الكتابة وانتظار ضغطة Enter أو اختيار بالماوس
+// Component: القائمة المنسدلة الاحترافية القابلة للبحث (مع حماية دفاعية)
 // -----------------------------------------------------------------------------
 interface SearchableDropdownProps {
   options: AccountItem[];
@@ -64,15 +57,15 @@ interface SearchableDropdownProps {
   clearText?: string;
 }
 
-const SearchableDropdown: React.FC<SearchableDropdownProps> = ({ options, value, onChange, placeholder, allowClear, clearText }) => {
+const SearchableDropdown: React.FC<SearchableDropdownProps> = ({ options = [], value, onChange, placeholder, allowClear, clearText }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [inputValue, setInputValue] = useState('');
   const wrapperRef = useRef<HTMLDivElement>(null);
 
-  // تحديث النص الظاهر فقط عندما تكون القائمة مغلقة (لتجنب مقاطعة المستخدم أثناء الكتابة)
   useEffect(() => {
     if (!isOpen) {
-      const selected = options.find(opt => opt.code === value);
+      const safeOptions = Array.isArray(options) ? options : [];
+      const selected = safeOptions.find(opt => opt?.code === value);
       if (selected) {
         setInputValue(`${selected.code} - ${selected.name}`);
       } else {
@@ -81,12 +74,12 @@ const SearchableDropdown: React.FC<SearchableDropdownProps> = ({ options, value,
     }
   }, [value, options, isOpen]);
 
-  // إغلاق القائمة عند النقر خارجها وإعادة النص للحالة الأصلية إذا لم يتم الاختيار
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (wrapperRef.current && !wrapperRef.current.contains(event.target as Node)) {
         setIsOpen(false);
-        const selected = options.find(opt => opt.code === value);
+        const safeOptions = Array.isArray(options) ? options : [];
+        const selected = safeOptions.find(opt => opt?.code === value);
         if (selected) {
           setInputValue(`${selected.code} - ${selected.name}`);
         } else {
@@ -98,24 +91,24 @@ const SearchableDropdown: React.FC<SearchableDropdownProps> = ({ options, value,
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [value, options]);
 
-  // فلترة النتائج بناءً على البحث
-  const filteredOptions = options.filter(opt =>
-    opt.code.toLowerCase().includes(inputValue.toLowerCase()) ||
-    opt.name.toLowerCase().includes(inputValue.toLowerCase())
+  const safeOptions = Array.isArray(options) ? options : [];
+  const filteredOptions = safeOptions.filter(opt =>
+    (opt?.code || '').toLowerCase().includes((inputValue || '').toLowerCase()) ||
+    (opt?.name || '').toLowerCase().includes((inputValue || '').toLowerCase())
   );
 
-  // التحكم بضغطة زر Enter لاعتماد الكود المكتوب فوراً
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === 'Enter') {
-      e.preventDefault(); // منع إرسال النموذج كامل
+      e.preventDefault(); 
       if (filteredOptions.length > 0) {
-        // البحث عن تطابق تام أولاً، وإلا اختيار أول خيار مفلتر
-        const exactMatch = filteredOptions.find(opt => opt.code === inputValue);
+        const exactMatch = filteredOptions.find(opt => opt?.code === inputValue);
         const selected = exactMatch || filteredOptions[0];
         
-        onChange(selected.code); // الآن فقط نرسل القيمة للنظام
-        setInputValue(`${selected.code} - ${selected.name}`); // تثبيت النص
-        setIsOpen(false); // إغلاق القائمة
+        if (selected) {
+          onChange(selected.code); 
+          setInputValue(`${selected.code} - ${selected.name}`); 
+          setIsOpen(false); 
+        }
       }
     }
   };
@@ -123,23 +116,21 @@ const SearchableDropdown: React.FC<SearchableDropdownProps> = ({ options, value,
   return (
     <div className="relative w-full" ref={wrapperRef}>
       <div className="flex items-center border border-slate-300 rounded-lg bg-white overflow-hidden focus-within:border-blue-500 focus-within:ring-2 focus-within:ring-blue-100 transition-all">
-        {/* المستطيل الأخضر للكتابة */}
         <input
           type="text"
           className="w-full p-2.5 outline-none text-sm font-bold text-slate-800 bg-transparent"
           placeholder={placeholder}
           value={inputValue}
           onFocus={(e) => {
-            e.target.select(); // تظليل النص لتسهيل مسحه وكتابة كود جديد
+            e.target.select(); 
             setIsOpen(true);
           }} 
           onChange={(e) => {
-            setInputValue(e.target.value); // تحديث المربع الظاهر فقط بدون إرسال للنظام
-            setIsOpen(true); // إبقاء القائمة الخضراء السفلية مفتوحة
+            setInputValue(e.target.value); 
+            setIsOpen(true); 
           }}
           onKeyDown={handleKeyDown}
         />
-        {/* المربع الأحمر لفتح وإغلاق القائمة */}
         <button
           type="button"
           className="px-3 py-2.5 bg-slate-100 border-r border-slate-300 hover:bg-slate-200 text-slate-600 transition flex items-center justify-center cursor-pointer"
@@ -149,7 +140,6 @@ const SearchableDropdown: React.FC<SearchableDropdownProps> = ({ options, value,
         </button>
       </div>
 
-      {/* منطقة المقترحات المنسدلة (أسفل المربع) */}
       {isOpen && (
         <div className="absolute z-50 w-full mt-1 bg-white border border-slate-200 rounded-xl shadow-2xl max-h-60 overflow-y-auto">
           {allowClear && (
@@ -167,16 +157,16 @@ const SearchableDropdown: React.FC<SearchableDropdownProps> = ({ options, value,
           {filteredOptions.length > 0 ? (
             filteredOptions.map(opt => (
               <div
-                key={opt.code}
+                key={opt?.code}
                 className="p-3 hover:bg-blue-50 cursor-pointer border-b border-slate-50 last:border-0 flex items-center gap-3"
                 onClick={() => {
-                  onChange(opt.code); // إرسال القيمة للنظام عند الضغط
-                  setInputValue(`${opt.code} - ${opt.name}`);
+                  onChange(opt?.code); 
+                  setInputValue(`${opt?.code} - ${opt?.name}`);
                   setIsOpen(false);
                 }}
               >
-                <span className="font-mono text-blue-700 font-bold bg-blue-100/50 px-2 py-1 rounded border border-blue-200">{opt.code}</span>
-                <span className="font-bold text-slate-700 text-sm">{opt.name}</span>
+                <span className="font-mono text-blue-700 font-bold bg-blue-100/50 px-2 py-1 rounded border border-blue-200">{opt?.code}</span>
+                <span className="font-bold text-slate-700 text-sm">{opt?.name}</span>
               </div>
             ))
           ) : (
@@ -217,17 +207,40 @@ export default function Accounting() {
 
   const [reportAccount, setReportAccount] = useState('');
 
+  // إعدادات الإشعارات (الجرس 🔔)
+  const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const notifRef = useRef<HTMLDivElement>(null);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([
+    { id: 1, message: "إشعار من المخزن: تم تجهيز طلبية مبيعات رقم 101. يرجى إثبات القيد المالي للمبيعات والمخزون.", amount: 5000000, reference: "101", isRead: false, date: "الآن" },
+    { id: 2, message: "إشعار من المخزن: تم تجهيز طلبية مبيعات رقم 24/2026. يرجى إثبات القيد المالي.", amount: 1050000, reference: "24/2026", isRead: false, date: "قبل 5 دقائق" }
+  ]);
+
+  const unreadCount = notifications.filter(n => !n.isRead).length;
+
+  useEffect(() => {
+    const handleClickOutsideNotif = (event: MouseEvent) => {
+      if (notifRef.current && !notifRef.current.contains(event.target as Node)) {
+        setIsNotifOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutsideNotif);
+    return () => document.removeEventListener('mousedown', handleClickOutsideNotif);
+  }, []);
+
   useEffect(() => {
     fetchEntries();
     fetchAccounts();
   }, []);
 
+  // جلب القيود
   const fetchEntries = async () => {
     try {
       if (supabase) {
-        const { data, error } = await supabase.from('journal_entries').select('*').order('id', { ascending: false });
-        if (!error && data) {
-          setEntries(data);
+        const { data, error } = await supabase.from('journal_entries').select('*').order('created_at', { ascending: false }).limit(300);
+        if (error) throw error;
+        if (data) {
+          const sortedData = data.sort((a, b) => (parseInt(b?.id) || 0) - (parseInt(a?.id) || 0));
+          setEntries(sortedData);
           return;
         }
       }
@@ -237,63 +250,76 @@ export default function Accounting() {
     }
   };
 
+  // جلب الحسابات
   const fetchAccounts = async () => {
     try {
       if (supabase) {
         const { data, error } = await supabase.from('accounts').select('*').order('code', { ascending: true });
-        if (!error && data && data.length > 0) {
+        if (error) throw error;
+        if (data && data.length > 0) {
           setAccountsList(data);
           return;
         }
       }
       setAccountsList([]);
     } catch (e) {
-      console.log('Error fetching accounts');
+      console.error('Error fetching accounts:', e);
     }
   };
 
-  const getAccountLiveBalance = (accountCode: string) => {
-    let balance = 0;
-    entries.forEach(entry => {
-      entry.lines.forEach(line => {
-        if (line.account === accountCode) {
-          balance += (line.debit || 0) - (line.credit || 0);
+  const accountBalancesMap = useMemo(() => {
+    const map = new Map<string, number>();
+    const safeEntries = Array.isArray(entries) ? entries : [];
+    safeEntries.forEach(entry => {
+      const safeLines = Array.isArray(entry?.lines) ? entry.lines : [];
+      safeLines.forEach(line => {
+        if (line?.account) {
+          const current = map.get(line.account) || 0;
+          map.set(line.account, current + ((Number(line.debit) || 0) - (Number(line.credit) || 0)));
         }
       });
     });
-    return balance;
+    return map;
+  }, [entries]);
+
+  const getAccountLiveBalance = (accountCode: string) => {
+    return accountBalancesMap.get(accountCode) || 0;
   };
 
   const handleSaveAccount = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!accCode || !accName) return alert('الرجاء تعبئة الحقول الأساسية');
 
-    const newAcc: AccountItem = {
-      id: editingAccount ? editingAccount.id : Date.now().toString(),
-      code: accCode,
-      name: accName,
-      type: accType,
-      parent_code: accParent || null,
-      is_active: true
-    };
+    try {
+      const newAcc: AccountItem = {
+        id: editingAccount ? editingAccount.id : Date.now().toString(),
+        code: accCode,
+        name: accName,
+        type: accType,
+        parent_code: accParent || null,
+        is_active: true
+      };
 
-    if (editingAccount) {
-      setAccountsList(accountsList.map(a => a.id === editingAccount.id ? newAcc : a));
-    } else {
-      setAccountsList([...accountsList, newAcc].sort((a, b) => a.code.localeCompare(b.code)));
+      if (editingAccount) {
+        setAccountsList(accountsList.map(a => a?.id === editingAccount.id ? newAcc : a));
+      } else {
+        setAccountsList([...accountsList, newAcc].sort((a, b) => (a?.code || '').localeCompare(b?.code || '')));
+      }
+      setIsAccountModalOpen(false);
+      resetAccountForm();
+    } catch (error: any) {
+      alert('خطأ في حفظ الحساب: ' + error?.message);
     }
-    setIsAccountModalOpen(false);
-    resetAccountForm();
   };
 
   const handleDeleteAccount = (id: string) => {
     if (window.confirm('تنبيه: هل أنت متأكد من حذف هذا الحساب نهائياً من الشجرة؟')) {
-      setAccountsList(accountsList.filter(a => a.id !== id && a.parent_code !== id));
+      setAccountsList(accountsList.filter(a => a?.id !== id && a?.parent_code !== id));
     }
   };
 
   const handleToggleAccountStatus = (id: string, currentStatus: boolean) => {
-    setAccountsList(accountsList.map(acc => acc.id === id ? { ...acc, is_active: !currentStatus } : acc));
+    setAccountsList(accountsList.map(acc => acc?.id === id ? { ...acc, is_active: !currentStatus } : acc));
   };
 
   const resetAccountForm = () => {
@@ -306,10 +332,13 @@ export default function Accounting() {
 
   const buildTree = (accounts: AccountItem[], parentId: string | null = null, depth: number = 0): (AccountItem & { depth: number })[] => {
     let tree: (AccountItem & { depth: number })[] = [];
-    const children = accounts.filter(acc => acc.parent_code === parentId);
+    const safeAccounts = Array.isArray(accounts) ? accounts : [];
+    const children = safeAccounts.filter(acc => acc?.parent_code === parentId);
     children.forEach(child => {
-      tree.push({ ...child, depth });
-      tree = tree.concat(buildTree(accounts, child.code, depth + 1));
+      if (child) {
+        tree.push({ ...child, depth });
+        tree = tree.concat(buildTree(accounts, child.code, depth + 1));
+      }
     });
     return tree;
   };
@@ -318,7 +347,7 @@ export default function Accounting() {
 
   const handleOpenNewEntryModal = () => {
     setEditingEntryId(null);
-    setNewReference(`JV-2026-${String(entries.length + 1).padStart(3, '0')}`);
+    setNewReference(''); 
     setNewDate(new Date().toISOString().split('T')[0]);
     setNewDescription('');
     setNewLines([
@@ -329,20 +358,42 @@ export default function Accounting() {
     setIsModalOpen(true);
   };
 
+  // تفاعل الإشعار الذكي: فتح نافذة قيد معبأة مسبقاً
+  const handleNotificationClick = (notif: NotificationItem) => {
+    setNotifications(notifications.map(n => n.id === notif.id ? { ...n, isRead: true } : n));
+    setIsNotifOpen(false);
+
+    setEditingEntryId(null);
+    setNewReference(notif.reference);
+    setNewDate(new Date().toISOString().split('T')[0]);
+    setNewDescription(`إثبات تسوية مبيعات وصرف مخزني للطلبية رقم (${notif.reference}) بناءً على إشعار المخازن.`);
+    
+    setNewLines([
+      { account: '', name: '', debit: notif.amount, credit: 0, quantity: 0 },
+      { account: '', name: '', debit: 0, credit: notif.amount, quantity: 0 }
+    ]);
+    
+    setIsPreviewMode(false);
+    setIsModalOpen(true);
+  };
+
   const handleEditEntry = (entry: JournalEntry) => {
+    if (!entry) return;
     setEditingEntryId(entry.id);
-    setNewReference(entry.reference);
-    setNewDate(entry.date);
-    setNewDescription(entry.description);
-    setNewLines([...entry.lines]); 
+    setNewReference(entry.reference || '');
+    setNewDate(entry.date || new Date().toISOString().split('T')[0]);
+    setNewDescription(entry.description || '');
+    setNewLines(Array.isArray(entry.lines) ? [...entry.lines] : []); 
     setIsPreviewMode(false);
     setIsModalOpen(true);
   };
 
   const handleLineChange = (index: number, field: keyof JournalLine, value: string | number) => {
     const updatedLines = [...newLines];
+    if (!updatedLines[index]) return;
+
     if (field === 'account') {
-      const selectedAcc = accountsList.find(a => a.code === value);
+      const selectedAcc = accountsList.find(a => a?.code === value);
       updatedLines[index].account = value as string;
       updatedLines[index].name = selectedAcc ? selectedAcc.name : '';
     } else if (field === 'debit') {
@@ -357,9 +408,16 @@ export default function Accounting() {
     setNewLines(updatedLines);
   };
 
-  const totalDebit = newLines.reduce((sum, line) => sum + (line.debit || 0), 0);
-  const totalCredit = newLines.reduce((sum, line) => sum + (line.credit || 0), 0);
+  const totalDebit = newLines.reduce((sum, line) => sum + (Number(line?.debit) || 0), 0);
+  const totalCredit = newLines.reduce((sum, line) => sum + (Number(line?.credit) || 0), 0);
   const isBalanced = totalDebit === totalCredit && totalDebit > 0;
+
+  const generateNextId = () => {
+    const safeEntries = Array.isArray(entries) ? entries : [];
+    if (safeEntries.length === 0) return '1';
+    const maxId = Math.max(...safeEntries.map(e => parseInt(e?.id) || 0));
+    return (maxId + 1).toString();
+  };
 
   const handleSubmitEntry = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -368,30 +426,36 @@ export default function Accounting() {
     setLoading(true);
     try {
       const entryData: JournalEntry = {
-        id: editingEntryId || `JV-${Date.now().toString().slice(-6)}`,
+        id: editingEntryId || generateNextId(),
         date: newDate,
-        reference: newReference || 'سند عام',
+        reference: newReference || '-',
         description: newDescription,
-        lines: newLines.filter(l => l.account !== ''),
+        lines: (Array.isArray(newLines) ? newLines : []).filter(l => l?.account !== ''),
       };
 
       if (supabase) {
         if (editingEntryId) {
-          await supabase.from('journal_entries').update(entryData).eq('id', editingEntryId);
+          const { error } = await supabase.from('journal_entries').update(entryData).eq('id', editingEntryId);
+          if (error) throw error;
         } else {
-          await supabase.from('journal_entries').insert([entryData]);
+          const { error } = await supabase.from('journal_entries').insert([entryData]);
+          if (error) throw error;
         }
       }
 
       if (editingEntryId) {
-        setEntries(entries.map(e => e.id === editingEntryId ? entryData : e));
+        setEntries(entries.map(e => e?.id === editingEntryId ? entryData : e));
       } else {
         setEntries([entryData, ...entries]);
+        
+        setTimeout(() => {
+          alert(`✅ تم حفظ القيد المالي بنجاح!\nتم إرسال إشعار آلي لـ "قسم المبيعات" باكتمال التسوية المالية.`);
+        }, 300);
       }
       
       setIsModalOpen(false);
     } catch (error: any) {
-      alert('خطأ في الحفظ: ' + error.message);
+      alert('خطأ في الحفظ السحابي: ' + (error?.message || error));
     } finally {
       setLoading(false);
     }
@@ -399,16 +463,23 @@ export default function Accounting() {
 
   const handleDeleteEntry = async (id: string) => {
     if (window.confirm('هل أنت متأكد من حذف هذا القيد من النظام نهائياً؟ سيؤثر هذا على كشوفات الحسابات.')) {
-      if (supabase) {
-        await supabase.from('journal_entries').delete().eq('id', id);
+      try {
+        if (supabase) {
+          const { error } = await supabase.from('journal_entries').delete().eq('id', id);
+          if (error) throw error;
+        }
+        setEntries(entries.filter(e => e?.id !== id));
+      } catch (error: any) {
+        alert('خطأ أثناء الحذف: ' + error?.message);
       }
-      setEntries(entries.filter(e => e.id !== id));
     }
   };
 
   const handlePrintEntry = (entry: JournalEntry) => {
-    const totalDeb = entry.lines.reduce((sum, line) => sum + line.debit, 0);
-    const totalCred = entry.lines.reduce((sum, line) => sum + line.credit, 0);
+    if (!entry) return;
+    const safeLines = Array.isArray(entry.lines) ? entry.lines : [];
+    const totalDeb = safeLines.reduce((sum, line) => sum + (Number(line?.debit) || 0), 0);
+    const totalCred = safeLines.reduce((sum, line) => sum + (Number(line?.credit) || 0), 0);
 
     const printWindow = window.open('', '_blank');
     if (!printWindow) return alert('يرجى السماح بفتح النوافذ المنبثقة للطباعة');
@@ -417,7 +488,7 @@ export default function Accounting() {
       <html dir="rtl" lang="ar">
       <head>
         <meta charset="utf-8">
-        <title>سند قيد - ${entry.id}</title>
+        <title>سند قيد رقم - ${entry.id}</title>
         <style>
           body { font-family: 'Tahoma', Arial, sans-serif; direction: rtl; padding: 20px; color: #111; background: #fff; }
           .header { text-align: center; margin-bottom: 25px; border-bottom: 2px solid #333; padding-bottom: 15px; }
@@ -435,20 +506,20 @@ export default function Accounting() {
       </head>
       <body>
         <div class="header">
-          <h2>شركة آسيا للكابلات والمنتجات الصناعية</h2>
+          <h2>ASIA CABLES COMPANY</h2>
           <p>سند قيد يومية معتمد - Quantum ERP</p>
         </div>
         <table class="info-table">
           <tr>
             <td><strong>رقم القيد:</strong> ${entry.id}</td>
-            <td style="text-align: left;"><strong>التاريخ:</strong> ${entry.date}</td>
+            <td style="text-align: left;"><strong>التاريخ:</strong> ${entry.date || ''}</td>
           </tr>
           <tr>
-            <td><strong>المرجع:</strong> ${entry.reference}</td>
+            <td><strong>المرجع:</strong> ${entry.reference || '-'}</td>
             <td style="text-align: left;"></td>
           </tr>
         </table>
-        <div class="desc-box"><strong>بيان القيد:</strong> ${entry.description}</div>
+        <div class="desc-box"><strong>بيان القيد:</strong> ${entry.description || ''}</div>
         <table class="main-table">
           <thead>
             <tr>
@@ -460,13 +531,13 @@ export default function Accounting() {
             </tr>
           </thead>
           <tbody>
-            ${entry.lines.map(line => `
+            ${safeLines.map(line => `
               <tr>
-                <td>${line.account}</td>
-                <td><strong>${line.name}</strong></td>
-                <td style="text-align: center;">${line.quantity && line.quantity > 0 ? line.quantity.toLocaleString() : '-'}</td>
-                <td style="text-align: center; color: #16a34a; font-weight: bold;">${line.debit > 0 ? line.debit.toLocaleString() : '-'}</td>
-                <td style="text-align: center; color: #dc2626; font-weight: bold;">${line.credit > 0 ? line.credit.toLocaleString() : '-'}</td>
+                <td>${line?.account || ''}</td>
+                <td><strong>${line?.name || ''}</strong></td>
+                <td style="text-align: center;">${line?.quantity && Number(line.quantity) > 0 ? Number(line.quantity).toLocaleString() : '-'}</td>
+                <td style="text-align: center; color: #16a34a; font-weight: bold;">${Number(line?.debit) > 0 ? Number(line.debit).toLocaleString() : '-'}</td>
+                <td style="text-align: center; color: #dc2626; font-weight: bold;">${Number(line?.credit) > 0 ? Number(line.credit).toLocaleString() : '-'}</td>
               </tr>
             `).join('')}
           </tbody>
@@ -495,10 +566,12 @@ export default function Accounting() {
     let csvContent = "data:text/csv;charset=utf-8,\uFEFF";
     csvContent += "رقم القيد,التاريخ,المرجع,البيان,رقم الحساب,اسم الحساب,مدين,دائن\n";
     
-    entries.forEach(entry => {
-      entry.lines.forEach(line => {
-        if (!reportAccount || line.account === reportAccount) {
-          csvContent += `"${entry.id}","${entry.date}","${entry.reference}","${entry.description}","${line.account}","${line.name}",${line.debit},${line.credit}\n`;
+    const safeEntries = Array.isArray(entries) ? entries : [];
+    safeEntries.forEach(entry => {
+      const safeLines = Array.isArray(entry?.lines) ? entry.lines : [];
+      safeLines.forEach(line => {
+        if (!reportAccount || line?.account === reportAccount) {
+          csvContent += `"${entry?.id || ''}","${entry?.date || ''}","${entry?.reference || ''}","${entry?.description || ''}","${line?.account || ''}","${line?.name || ''}",${Number(line?.debit) || 0},${Number(line?.credit) || 0}\n`;
         }
       });
     });
@@ -512,11 +585,18 @@ export default function Accounting() {
     document.body.removeChild(link);
   };
 
-  const filteredEntries = entries.filter(e => 
-    (e.reference || '').toLowerCase().includes(searchQuery.toLowerCase()) || 
-    (e.description || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-    e.lines.some(l => l.name.toLowerCase().includes(searchQuery.toLowerCase()) || l.account.includes(searchQuery))
-  );
+  const safeEntriesFilter = Array.isArray(entries) ? entries : [];
+  const filteredEntries = safeEntriesFilter.filter(e => {
+    if (!e) return false;
+    const q = (searchQuery || '').toLowerCase();
+    const refMatch = (e.reference || '').toLowerCase().includes(q);
+    const descMatch = (e.description || '').toLowerCase().includes(q);
+    const linesMatch = Array.isArray(e.lines) && e.lines.some(l => 
+      (l?.name || '').toLowerCase().includes(q) || (l?.account || '').includes(q)
+    );
+    const idMatch = (e.id || '').toLowerCase().includes(q);
+    return refMatch || descMatch || linesMatch || idMatch;
+  });
 
   return (
     <div dir="rtl" className="p-4 md:p-6 bg-slate-50 min-h-screen font-sans">
@@ -550,9 +630,57 @@ export default function Accounting() {
             </button>
           </div>
           
+          {/* أيقونة الإشعارات (الجرس) */}
+          <div className="relative" ref={notifRef}>
+            <button 
+              onClick={() => setIsNotifOpen(!isNotifOpen)}
+              className="relative p-2.5 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 text-slate-600 transition shadow-sm"
+            >
+              <Bell size={20} />
+              {unreadCount > 0 && (
+                <span className="absolute -top-2 -right-2 bg-rose-600 text-white text-[10px] font-bold w-5 h-5 flex items-center justify-center rounded-full border-2 border-white shadow-sm">
+                  {unreadCount}
+                </span>
+              )}
+            </button>
+
+            {isNotifOpen && (
+              <div className="absolute top-12 left-0 w-80 bg-white border border-slate-200 rounded-xl shadow-2xl z-50 overflow-hidden">
+                <div className="bg-slate-50 border-b border-slate-100 p-3 flex justify-between items-center">
+                  <span className="font-bold text-slate-800 text-sm">إشعارات المحاسبة</span>
+                  <span className="text-xs bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full font-bold">{unreadCount} جديد</span>
+                </div>
+                <div className="max-h-80 overflow-y-auto">
+                  {notifications.length === 0 ? (
+                    <div className="p-4 text-center text-slate-400 text-sm font-bold">لا توجد إشعارات حالياً</div>
+                  ) : (
+                    notifications.map(notif => (
+                      <div 
+                        key={notif.id} 
+                        className={`p-3 border-b border-slate-50 cursor-pointer transition ${notif.isRead ? 'bg-white hover:bg-slate-50' : 'bg-blue-50/50 hover:bg-blue-50'}`}
+                        onClick={() => handleNotificationClick(notif)}
+                      >
+                        <div className="flex justify-between items-start mb-1">
+                          <span className={`text-xs font-bold ${notif.isRead ? 'text-slate-500' : 'text-blue-700'}`}>طلبية مبيعات #{notif.reference}</span>
+                          <span className="text-[10px] text-slate-400 font-mono">{notif.date}</span>
+                        </div>
+                        <p className={`text-sm ${notif.isRead ? 'text-slate-600' : 'text-slate-800 font-medium'}`}>{notif.message}</p>
+                        {!notif.isRead && (
+                          <div className="mt-2 flex items-center gap-1 text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded w-fit">
+                            <PlusCircle size={12} /> اضغط لإنشاء القيد الآلي
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
           <button 
             onClick={handleOpenNewEntryModal}
-            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition flex items-center gap-2 shadow-md w-full md:w-auto justify-center"
+            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl text-sm font-bold transition flex items-center gap-2 shadow-md w-full md:w-auto justify-center"
           >
             <PlusCircle size={18} /> إنشاء سند قيد
           </button>
@@ -602,13 +730,14 @@ export default function Accounting() {
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {hierarchicalAccounts.map((acc) => {
+                  if (!acc) return null;
                   const liveBal = getAccountLiveBalance(acc.code);
                   return (
                     <tr key={acc.id} className="hover:bg-blue-50/50 transition">
                       <td className="p-3 font-mono font-bold text-blue-700">{acc.code}</td>
                       <td className="p-3 font-bold text-slate-800 flex items-center">
-                        <span style={{ paddingRight: `${acc.depth * 25}px` }} className="flex items-center gap-2">
-                          {acc.depth > 0 && <CornerDownLeft size={16} className="text-slate-400" />}
+                        <span style={{ paddingRight: `${(acc.depth || 0) * 25}px` }} className="flex items-center gap-2">
+                          {(acc.depth || 0) > 0 && <CornerDownLeft size={16} className="text-slate-400" />}
                           {acc.name}
                         </span>
                       </td>
@@ -645,14 +774,14 @@ export default function Accounting() {
             <Search className="text-slate-400" size={20} />
             <input 
               type="text" 
-              placeholder="ابحث عن قيد بواسطة المرجع، الوصف، اسم الحساب، أو الكود..."
+              placeholder="ابحث عن قيد بواسطة رقم القيد، المرجع، الوصف، أو اسم الحساب..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full bg-transparent border-none focus:outline-none text-sm font-medium"
             />
           </div>
 
-          {entries.length === 0 && (
+          {filteredEntries.length === 0 && (
             <div className="bg-white rounded-2xl border border-slate-200 p-10 text-center shadow-sm">
               <FileText className="mx-auto text-slate-300 mb-4" size={48} />
               <h3 className="text-lg font-bold text-slate-600">لا توجد أي قيود مسجلة بعد</h3>
@@ -660,51 +789,55 @@ export default function Accounting() {
             </div>
           )}
 
-          {filteredEntries.map((entry) => (
-            <div key={entry.id} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-              <div className="bg-slate-800 p-4 text-white flex flex-wrap justify-between items-center gap-2">
-                <div className="flex items-center gap-3">
-                  <span className="bg-blue-600 px-3 py-1 rounded-lg text-xs font-mono font-bold">{entry.id}</span>
-                  <span className="font-bold text-sm">المرجع: {entry.reference}</span>
+          {filteredEntries.map((entry) => {
+            if (!entry) return null;
+            const safeLines = Array.isArray(entry.lines) ? entry.lines : [];
+            return (
+              <div key={entry.id} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                <div className="bg-slate-800 p-4 text-white flex flex-wrap justify-between items-center gap-2">
+                  <div className="flex items-center gap-3">
+                    <span className="bg-blue-600 px-3 py-1 rounded-lg text-xs font-mono font-bold">قيد رقم: {entry.id}</span>
+                    <span className="font-bold text-sm">المرجع: {entry.reference || '-'}</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-slate-300 font-mono">التاريخ: {entry.date || ''}</span>
+                    <button onClick={() => handleEditEntry(entry)} className="bg-emerald-600 hover:bg-emerald-500 transition px-3 py-1.5 rounded-lg flex items-center gap-1.5 text-xs font-bold shadow-sm"><Edit3 size={14} /> تعديل</button>
+                    <button onClick={() => handlePrintEntry(entry)} className="bg-slate-700 hover:bg-slate-600 transition px-3 py-1.5 rounded-lg flex items-center gap-1.5 text-xs font-bold border border-slate-600 shadow-sm"><Printer size={14} /> طباعة</button>
+                    <button onClick={() => handleDeleteEntry(entry.id)} className="bg-rose-600 hover:bg-rose-500 transition px-3 py-1.5 rounded-lg flex items-center gap-1.5 text-xs font-bold"><Trash2 size={14} /> حذف</button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-3">
-                  <span className="text-xs text-slate-300 font-mono">التاريخ: {entry.date}</span>
-                  <button onClick={() => handleEditEntry(entry)} className="bg-emerald-600 hover:bg-emerald-500 transition px-3 py-1.5 rounded-lg flex items-center gap-1.5 text-xs font-bold shadow-sm"><Edit3 size={14} /> تعديل</button>
-                  <button onClick={() => handlePrintEntry(entry)} className="bg-slate-700 hover:bg-slate-600 transition px-3 py-1.5 rounded-lg flex items-center gap-1.5 text-xs font-bold border border-slate-600 shadow-sm"><Printer size={14} /> طباعة</button>
-                  <button onClick={() => handleDeleteEntry(entry.id)} className="bg-rose-600 hover:bg-rose-500 transition px-3 py-1.5 rounded-lg flex items-center gap-1.5 text-xs font-bold"><Trash2 size={14} /> حذف</button>
-                </div>
-              </div>
-              <div className="p-5">
-                <p className="text-sm font-bold text-slate-700 mb-4 bg-slate-50 p-3 rounded-xl border border-slate-100">
-                  <span className="text-slate-400 ml-2">البيان الشامل:</span> {entry.description}
-                </p>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-right text-sm">
-                    <thead className="bg-slate-100 text-slate-700 font-bold border-b-2 border-slate-200">
-                      <tr>
-                        <th className="p-3">رقم الحساب</th>
-                        <th className="p-3">اسم الحساب المالي</th>
-                        <th className="p-3 text-center">الكمية</th>
-                        <th className="p-3 text-center text-emerald-700">مدين (Debit)</th>
-                        <th className="p-3 text-center text-rose-700">دائن (Credit)</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {entry.lines.map((line, idx) => (
-                        <tr key={idx} className="hover:bg-slate-50">
-                          <td className="p-3 font-mono font-bold text-slate-500">{line.account}</td>
-                          <td className="p-3 font-bold text-slate-800">{line.name}</td>
-                          <td className="p-3 text-center font-mono text-slate-600">{line.quantity && line.quantity > 0 ? line.quantity.toLocaleString() : '-'}</td>
-                          <td className="p-3 text-center font-mono font-bold text-emerald-600">{line.debit > 0 ? line.debit.toLocaleString() : '-'}</td>
-                          <td className="p-3 text-center font-mono font-bold text-rose-600">{line.credit > 0 ? line.credit.toLocaleString() : '-'}</td>
+                <div className="p-5">
+                  <p className="text-sm font-bold text-slate-700 mb-4 bg-slate-50 p-3 rounded-xl border border-slate-100">
+                    <span className="text-slate-400 ml-2">البيان الشامل:</span> {entry.description || ''}
+                  </p>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-right text-sm">
+                      <thead className="bg-slate-100 text-slate-700 font-bold border-b-2 border-slate-200">
+                        <tr>
+                          <th className="p-3">رقم الحساب</th>
+                          <th className="p-3">اسم الحساب المالي</th>
+                          <th className="p-3 text-center">الكمية</th>
+                          <th className="p-3 text-center text-emerald-700">مدين (Debit)</th>
+                          <th className="p-3 text-center text-rose-700">دائن (Credit)</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {safeLines.map((line, idx) => (
+                          <tr key={idx} className="hover:bg-slate-50">
+                            <td className="p-3 font-mono font-bold text-slate-500">{line?.account || ''}</td>
+                            <td className="p-3 font-bold text-slate-800">{line?.name || ''}</td>
+                            <td className="p-3 text-center font-mono text-slate-600">{line?.quantity && Number(line.quantity) > 0 ? Number(line.quantity).toLocaleString() : '-'}</td>
+                            <td className="p-3 text-center font-mono font-bold text-emerald-600">{Number(line?.debit) > 0 ? Number(line.debit).toLocaleString() : '-'}</td>
+                            <td className="p-3 text-center font-mono font-bold text-rose-600">{Number(line?.credit) > 0 ? Number(line.credit).toLocaleString() : '-'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 
@@ -737,14 +870,13 @@ export default function Accounting() {
             <div>
               <label className="block text-xs font-bold text-slate-600 mb-1">اختر الحساب / العميل المطلوب إصدار كشف له</label>
               <div className="relative">
-                 {/* تم تطبيق النظام الذكي الجديد هنا في قسم التقارير أيضاً */}
                  <SearchableDropdown
-                    options={accountsList}
-                    value={reportAccount}
-                    onChange={setReportAccount}
-                    placeholder="اكتب كود أو اسم الحساب للبحث..."
-                    allowClear={true}
-                    clearText="-- عرض كل الحركات (كشف عام) --"
+                   options={accountsList}
+                   value={reportAccount}
+                   onChange={setReportAccount}
+                   placeholder="اكتب كود أو اسم الحساب للبحث..."
+                   allowClear={true}
+                   clearText="-- عرض كل الحركات (كشف عام) --"
                  />
               </div>
             </div>
@@ -776,26 +908,28 @@ export default function Accounting() {
                 {entries.length === 0 ? (
                   <tr><td colSpan={8} className="p-6 text-center text-slate-400 font-bold">لا توجد حركات مسجلة حالياً. ابدأ بإضافة قيد جديد.</td></tr>
                 ) : (
-                  entries.flatMap(entry => 
-                    entry.lines
-                      .filter(line => !reportAccount || line.account === reportAccount)
+                  entries.flatMap(entry => {
+                    if (!entry) return [];
+                    const safeLines = Array.isArray(entry.lines) ? entry.lines : [];
+                    return safeLines
+                      .filter(line => !reportAccount || line?.account === reportAccount)
                       .map((line, idx) => (
                         <tr key={`${entry.id}-${idx}`} className="hover:bg-slate-50">
                           <td className="p-3 font-mono font-bold text-blue-600">{entry.id}</td>
-                          <td className="p-3 font-mono text-xs">{entry.date}</td>
-                          <td className="p-3 text-xs">{entry.reference}</td>
-                          <td className="p-3 font-medium text-slate-800">{entry.description}</td>
-                          <td className="p-3 text-slate-600 font-bold">{line.account} - {line.name}</td>
-                          <td className="p-3 text-center font-mono font-bold text-emerald-600">{line.debit > 0 ? line.debit.toLocaleString() : '-'}</td>
-                          <td className="p-3 text-center font-mono font-bold text-rose-600">{line.credit > 0 ? line.credit.toLocaleString() : '-'}</td>
+                          <td className="p-3 font-mono text-xs">{entry.date || ''}</td>
+                          <td className="p-3 text-xs">{entry.reference || ''}</td>
+                          <td className="p-3 font-medium text-slate-800">{entry.description || ''}</td>
+                          <td className="p-3 text-slate-600 font-bold">{line?.account || ''} - {line?.name || ''}</td>
+                          <td className="p-3 text-center font-mono font-bold text-emerald-600">{Number(line?.debit) > 0 ? Number(line.debit).toLocaleString() : '-'}</td>
+                          <td className="p-3 text-center font-mono font-bold text-rose-600">{Number(line?.credit) > 0 ? Number(line.credit).toLocaleString() : '-'}</td>
                           <td className="p-3 text-center flex justify-center gap-2">
                             <button onClick={() => handleEditEntry(entry)} className="p-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-600 rounded-lg transition" title="تعديل القيد"><Edit3 size={16} /></button>
                             <button onClick={() => handlePrintEntry(entry)} className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg transition" title="طباعة القيد"><Printer size={16} /></button>
                             <button onClick={() => handleDeleteEntry(entry.id)} className="p-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded-lg transition" title="حذف القيد نهائياً"><Trash2 size={16} /></button>
                           </td>
                         </tr>
-                      ))
-                  )
+                      ));
+                  })
                 )}
               </tbody>
             </table>
@@ -835,7 +969,6 @@ export default function Accounting() {
               </div>
               <div>
                 <label className="block text-xs font-bold text-slate-600 mb-1">يتفرع من (الحساب الرئيسي)</label>
-                {/* تم تطبيق النظام الذكي الجديد هنا في شاشة إنشاء الحساب أيضاً */}
                 <SearchableDropdown
                   options={accountsList}
                   value={accParent}
@@ -886,40 +1019,38 @@ export default function Accounting() {
                 <div className="space-y-3 pt-2">
                   <label className="block text-xs font-bold text-slate-600">أطراف القيد المحاسبي (البحث الذكي):</label>
                   {newLines.map((line, idx) => {
-                    const accLiveBal = line.account ? getAccountLiveBalance(line.account) : null;
+                    const accLiveBal = line?.account ? getAccountLiveBalance(line.account) : null;
                     return (
                       <div key={idx} className="bg-slate-50 p-3 rounded-xl border space-y-2">
                         <div className="flex flex-wrap md:flex-nowrap gap-2 items-center">
                           <div className="w-full md:w-2/5 relative">
-                             {/* تم تطبيق النظام الذكي الجديد هنا في أطراف القيد */}
                              <SearchableDropdown
-                               options={accountsList.filter(a => a.is_active)}
-                               value={line.account}
+                               options={accountsList.filter(a => a?.is_active)}
+                               value={line?.account || ''}
                                onChange={(val) => handleLineChange(idx, 'account', val)}
                                placeholder="اختر الحساب أو اكتب كود للبحث..."
                              />
                           </div>
-                          
                           <input 
                             type="number" 
                             placeholder="الكمية (اختياري)" 
-                            value={line.quantity || ''} 
+                            value={line?.quantity || ''} 
                             onChange={(e) => handleLineChange(idx, 'quantity', e.target.value)} 
-                            className="w-full md:w-1/5 p-2 border rounded-lg text-sm text-center font-mono text-slate-700" 
+                            className="w-full md:w-1/5 p-2 border rounded-lg text-sm text-center font-mono text-slate-700 outline-none" 
                           />
                           <input 
                             type="number" 
                             placeholder="مدين (Debit)" 
-                            value={line.debit || ''} 
+                            value={line?.debit || ''} 
                             onChange={(e) => handleLineChange(idx, 'debit', e.target.value)} 
-                            className="w-full md:w-1/5 p-2 border rounded-lg text-sm text-center font-mono text-emerald-700 font-bold" 
+                            className="w-full md:w-1/5 p-2 border rounded-lg text-sm text-center font-mono text-emerald-700 font-bold outline-none focus:ring-2 focus:ring-emerald-500" 
                           />
                           <input 
                             type="number" 
                             placeholder="دائن (Credit)" 
-                            value={line.credit || ''} 
+                            value={line?.credit || ''} 
                             onChange={(e) => handleLineChange(idx, 'credit', e.target.value)} 
-                            className="w-full md:w-1/5 p-2 border rounded-lg text-sm text-center font-mono text-rose-700 font-bold" 
+                            className="w-full md:w-1/5 p-2 border rounded-lg text-sm text-center font-mono text-rose-700 font-bold outline-none focus:ring-2 focus:ring-rose-500" 
                           />
                         </div>
                         {accLiveBal !== null && (
@@ -961,13 +1092,13 @@ export default function Accounting() {
                       </tr>
                     </thead>
                     <tbody>
-                      {newLines.filter(l => l.account).map((l, i) => (
+                      {newLines.filter(l => l?.account).map((l, i) => (
                         <tr key={i} className="border-b">
-                          <td className="p-2 font-mono text-slate-600">{l.account}</td>
-                          <td className="p-2 font-bold">{l.name}</td>
-                          <td className="p-2 text-center font-mono">{l.quantity || '-'}</td>
-                          <td className="p-2 text-center text-emerald-600 font-bold">{l.debit > 0 ? l.debit.toLocaleString() : '-'}</td>
-                          <td className="p-2 text-center text-rose-600 font-bold">{l.credit > 0 ? l.credit.toLocaleString() : '-'}</td>
+                          <td className="p-2 font-mono text-slate-600">{l?.account || ''}</td>
+                          <td className="p-2 font-bold">{l?.name || ''}</td>
+                          <td className="p-2 text-center font-mono">{l?.quantity || '-'}</td>
+                          <td className="p-2 text-center text-emerald-600 font-bold">{Number(l?.debit) > 0 ? Number(l.debit).toLocaleString() : '-'}</td>
+                          <td className="p-2 text-center text-rose-600 font-bold">{Number(l?.credit) > 0 ? Number(l.credit).toLocaleString() : '-'}</td>
                         </tr>
                       ))}
                     </tbody>

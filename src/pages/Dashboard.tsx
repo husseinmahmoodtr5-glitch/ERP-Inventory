@@ -10,7 +10,8 @@ import {
   FolderTree, 
   ArrowLeftRight, 
   Calculator, 
-  FileText,
+  ShoppingCart,
+  Beaker,
   CheckCircle2,
   AlertTriangle,
   Info
@@ -25,7 +26,8 @@ import {
   ResponsiveContainer 
 } from 'recharts';
 
-const chartData = [
+// البيانات المبدئية (سيتم ربطها لاحقاً بقاعدة البيانات)
+const initialChartData = [
   { name: 'السبت', production: 120, consumption: 140 },
   { name: 'الأحد', production: 180, consumption: 150 },
   { name: 'الإثنين', production: 250, consumption: 180 },
@@ -36,18 +38,52 @@ const chartData = [
 ];
 
 interface DashboardProps {
-  setTab: (tab: any) => void;
+  setTab?: (tab: string) => void; // تم جعلها اختيارية برمجياً لمنع الأخطاء
 }
 
 export default function Dashboard({ setTab }: DashboardProps) {
-  const [marketRate, setMarketRate] = useState(150250);
+  const [marketRate, setMarketRate] = useState<number>(150250);
+  const [chartData, setChartData] = useState(initialChartData);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
 
+  // ==========================================
+  // --- هيكل جلب البيانات الآمن (للمستقبل) ---
+  // ==========================================
+  useEffect(() => {
+    const fetchDashboardStats = async () => {
+      setIsLoading(true);
+      try {
+        // 🚀 هنا سيتم وضع أكواد Supabase لجلب الإحصائيات مستقبلاً
+        // const { data, error } = await supabase.from('...').select('...');
+        // if (error) throw error;
+      } catch (error: any) {
+        console.error("خطأ صامت تم التقاطه في لوحة التحكم:", error?.message);
+        // لا نظهر alert هنا كي لا نزعج المستخدم في الصفحة الرئيسية، نكتفي بتسجيل الخطأ
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchDashboardStats();
+  }, []);
+
+  // محاكاة حية لتغير سعر الصرف
   useEffect(() => {
     const interval = setInterval(() => {
       setMarketRate(prev => prev + (Math.random() > 0.5 ? 250 : -250));
     }, 5000);
     return () => clearInterval(interval);
   }, []);
+
+  // دالة تنقل آمنة دفاعياً
+  const handleNavigation = (tabName: string) => {
+    if (typeof setTab === 'function') {
+      setTab(tabName);
+    }
+  };
+
+  // تأمين مصفوفة المخطط البياني لمنع انهيار مكتبة Recharts
+  const safeChartData = Array.isArray(chartData) ? chartData : [];
 
   return (
     <div dir="rtl" className="space-y-6 pb-8 animate-fade-in">
@@ -62,13 +98,13 @@ export default function Dashboard({ setTab }: DashboardProps) {
         </div>
         <div className="flex gap-2 w-full md:w-auto">
           <button 
-            onClick={() => setTab && setTab('production')}
+            onClick={() => handleNavigation('production')}
             className="flex-1 md:flex-none bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-lg shadow-blue-600/20 transition-all"
           >
             <PlusCircle size={18} /> أمر إنتاج
           </button>
           <button 
-            onClick={() => setTab && setTab('movement')}
+            onClick={() => handleNavigation('movement')}
             className="flex-1 md:flex-none bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 px-4 py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-sm transition-all"
           >
             <ArrowUpRight size={18} className="text-emerald-600" /> استلام مواد
@@ -85,7 +121,7 @@ export default function Dashboard({ setTab }: DashboardProps) {
               <span className="text-xs font-bold text-slate-600">المركزي</span>
               <span className="font-mono font-bold text-slate-800">132,000 د.ع</span>
             </div>
-            <div className="flex justify-between items-center bg-blue-50/50 p-2 rounded-xl border border-blue-100">
+            <div className="flex justify-between items-center bg-blue-50/50 p-2 rounded-xl border border-blue-100 transition-all duration-500">
               <span className="text-xs font-bold text-blue-800">الموازي</span>
               <span className="font-mono font-bold text-blue-700">{marketRate.toLocaleString()} د.ع</span>
             </div>
@@ -121,18 +157,30 @@ export default function Dashboard({ setTab }: DashboardProps) {
 
       {/* المخطط والنشاطات */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 bg-white/60 backdrop-blur-lg border border-white/80 p-5 rounded-3xl shadow-sm">
+        <div className="lg:col-span-2 bg-white/60 backdrop-blur-lg border border-white/80 p-5 rounded-3xl shadow-sm overflow-hidden">
           <h2 className="font-bold text-slate-800 flex items-center gap-2 mb-6"><TrendingUp className="text-blue-600" /> تحليل الإنتاج (أسبوع)</h2>
-          <div className="h-[250px] w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={chartData}><CartesianGrid strokeDasharray="3 3" vertical={false}/><XAxis dataKey="name"/><YAxis orientation="right"/><Tooltip /><Area type="monotone" dataKey="production" stroke="#2563eb" fill="#dbeafe"/><Area type="monotone" dataKey="consumption" stroke="#f59e0b" fill="#fef3c7"/></AreaChart>
-            </ResponsiveContainer>
+          <div className="h-[250px] w-full" dir="ltr">
+            {/* تم حماية الـ Chart وتحديد اتجاه LTR لمنع مشاكل العرض في الـ RTL */}
+            {safeChartData.length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={safeChartData}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false}/>
+                  <XAxis dataKey="name" tick={{fontFamily: 'sans-serif'}} />
+                  <YAxis orientation="right" tick={{fontFamily: 'sans-serif'}} />
+                  <Tooltip />
+                  <Area type="monotone" dataKey="production" stroke="#2563eb" fill="#dbeafe" name="الإنتاج" />
+                  <Area type="monotone" dataKey="consumption" stroke="#f59e0b" fill="#fef3c7" name="الاستهلاك" />
+                </AreaChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="w-full h-full flex items-center justify-center text-slate-400 font-bold">لا توجد بيانات بيانية للعرض</div>
+            )}
           </div>
         </div>
 
         <div className="bg-white/60 backdrop-blur-lg border border-white/80 p-5 rounded-3xl shadow-sm">
           <h2 className="font-bold text-slate-800 mb-6"><Activity className="text-rose-500 inline" /> سجل النشاطات</h2>
-          <div className="space-y-4 max-h-[250px] overflow-y-auto">
+          <div className="space-y-4 max-h-[250px] overflow-y-auto pr-2">
             <div className="pr-4 border-r-2 border-emerald-500"><p className="text-xs font-bold">استلام مواد خام</p><p className="text-xs text-slate-500">تم إدخال 5 طن نحاس.</p></div>
             <div className="pr-4 border-r-2 border-blue-500"><p className="text-xs font-bold">بدء أمر إنتاج</p><p className="text-xs text-slate-500">أمر رقم #PROD-055.</p></div>
             <div className="pr-4 border-r-2 border-amber-500"><p className="text-xs font-bold">تنبيه مخزون</p><p className="text-xs text-slate-500">نقص في مادة PVC.</p></div>
@@ -140,15 +188,15 @@ export default function Dashboard({ setTab }: DashboardProps) {
         </div>
       </div>
 
-      {/* الوصول السريع السفلي */}
+      {/* الوصول السريع السفلي (تم استبدال التقارير بالمبيعات والسيطرة النوعية) */}
       <div className="pt-6 mt-6 border-t border-slate-200/60">
         <h2 className="font-bold text-slate-700 mb-4 px-2">الانتقال السريع</h2>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-          <button onClick={() => setTab && setTab('inventory')} className="flex flex-col items-center gap-3 p-4 bg-white/40 border border-white/60 rounded-2xl shadow-sm hover:shadow-md transition"><FolderTree className="text-blue-600" />شجرة المخزون</button>
-          <button onClick={() => setTab && setTab('movement')} className="flex flex-col items-center gap-3 p-4 bg-white/40 border border-white/60 rounded-2xl shadow-sm hover:shadow-md transition"><ArrowLeftRight className="text-emerald-600" />حركة المخزون</button>
-          <button onClick={() => setTab && setTab('production')} className="flex flex-col items-center gap-3 p-4 bg-white/40 border border-white/60 rounded-2xl shadow-sm hover:shadow-md transition"><Factory className="text-amber-600" />قسم الإنتاج</button>
-          <button onClick={() => setTab && setTab('accounting')} className="flex flex-col items-center gap-3 p-4 bg-white/40 border border-white/60 rounded-2xl shadow-sm hover:shadow-md transition"><Calculator className="text-indigo-600" />المحاسبة</button>
-          <button onClick={() => setTab && setTab('reports')} className="flex flex-col items-center gap-3 p-4 bg-white/40 border border-white/60 rounded-2xl shadow-sm hover:shadow-md transition"><FileText className="text-rose-600" />التقارير</button>
+          <button onClick={() => handleNavigation('movement')} className="flex flex-col items-center gap-3 p-4 bg-white/40 border border-white/60 rounded-2xl shadow-sm hover:shadow-md transition"><ArrowLeftRight className="text-emerald-600" />المخازن</button>
+          <button onClick={() => handleNavigation('production')} className="flex flex-col items-center gap-3 p-4 bg-white/40 border border-white/60 rounded-2xl shadow-sm hover:shadow-md transition"><Factory className="text-amber-600" />الإنتاج</button>
+          <button onClick={() => handleNavigation('sales')} className="flex flex-col items-center gap-3 p-4 bg-white/40 border border-white/60 rounded-2xl shadow-sm hover:shadow-md transition"><ShoppingCart className="text-blue-600" />المبيعات</button>
+          <button onClick={() => handleNavigation('accounting')} className="flex flex-col items-center gap-3 p-4 bg-white/40 border border-white/60 rounded-2xl shadow-sm hover:shadow-md transition"><Calculator className="text-indigo-600" />المحاسبة</button>
+          <button onClick={() => handleNavigation('quality')} className="flex flex-col items-center gap-3 p-4 bg-white/40 border border-white/60 rounded-2xl shadow-sm hover:shadow-md transition"><Beaker className="text-rose-600" />السيطرة النوعية</button>
         </div>
       </div>
     </div>

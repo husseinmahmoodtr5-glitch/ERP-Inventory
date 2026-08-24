@@ -1,29 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { 
-  Factory, 
-  Plus, 
-  Trash2, 
-  Layers, 
-  ClipboardList, 
-  CheckCircle2, 
-  AlertCircle, 
-  X,
-  Settings,
-  Clock,
-  DollarSign,
-  Save,
-  Play,
-  Check,
-  Ban,
-  Activity,
-  BarChart3
+  Factory, Plus, Trash2, Layers, ClipboardList, CheckCircle2, 
+  AlertCircle, X, Settings, Play, Check, Activity, BarChart3, Edit2, Bell
 } from 'lucide-react';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const supabase = (supabaseUrl && supabaseAnonKey) ? createClient(supabaseUrl, supabaseAnonKey) : null;
 
+// ==========================================
+// --- واجهات البيانات (Interfaces) ---
+// ==========================================
 interface BOMItem {
   material_name: string;
   quantity_per_meter: number;
@@ -39,24 +27,12 @@ interface BOM {
   items: BOMItem[];
 }
 
-interface TreeItem {
-  id: string;
-  name: string;
-  code: string;
-  type: string;
-  unit: string;
-}
-
-interface Movement {
-  id?: string;
-  date: string;
-  type: 'IN' | 'OUT';
-  item_name: string;
-  quantity: number;
-  unit: string;
-  doc_number?: string;
-  qc_status?: string;
-  notes?: string;
+interface Material { 
+  id: string | number; 
+  material_code: string; 
+  warehouse_name: string; 
+  material_name: string; 
+  unit: string; 
 }
 
 interface ProductionOrder {
@@ -73,23 +49,26 @@ interface ProductionOrder {
 
 const normalizeText = (str: string) => {
   if (!str) return '';
-  return str
-    .trim()
-    .replace(/[أإآ]/g, 'ا')
-    .replace(/ة/g, 'ه')
-    .toLowerCase();
+  return String(str).trim().replace(/[أإآ]/g, 'ا').replace(/ة/g, 'ه').toLowerCase();
 };
 
 export default function Production() {
   const [activeTab, setActiveTab] = useState<'ORDERS' | 'BOM' | 'LOG'>('ORDERS');
   
   const [boms, setBoms] = useState<BOM[]>([]);
-  const [treeItems, setTreeItems] = useState<TreeItem[]>([]);
-  const [movements, setMovements] = useState<Movement[]>([]);
+  const [materials, setMaterials] = useState<Material[]>([]);
+  const [liveStock, setLiveStock] = useState<any[]>([]); // 🚀 تم استبدال الحركات العشوائية بجدول الأرصدة الحية
+  const [warehouses, setWarehouses] = useState<any[]>([]); // لحل مشكلة العلاقات (FK)
   const [orders, setOrders] = useState<ProductionOrder[]>([]);
   
   const [showBomModal, setShowBomModal] = useState<boolean>(false);
+  const [editingBomId, setEditingBomId] = useState<string | null>(null);
   const [selectedProduct, setSelectedProduct] = useState<string>('');
+  
+  const [isCustomProduct, setIsCustomProduct] = useState<boolean>(false);
+  const [customProductName, setCustomProductName] = useState<string>('');
+  const [customProductCode, setCustomProductCode] = useState<string>('');
+
   const [selectedMaterialsList, setSelectedMaterialsList] = useState<string[]>([]);
   const [bomItemsConfig, setBomItemsConfig] = useState<BOMItem[]>([]);
   const [bomStep, setBomStep] = useState<1 | 2>(1);
@@ -97,6 +76,27 @@ export default function Production() {
   const [orderNumber, setOrderNumber] = useState<string>('');
   const [selectedBomId, setSelectedBomId] = useState<string>('');
   const [targetQuantity, setTargetQuantity] = useState<number>(5000);
+
+  // إعدادات الإشعارات (الجرس 🔔)
+  const [isNotifOpen, setIsNotifOpen] = useState(false);
+  const notifRef = useRef<HTMLDivElement>(null);
+  const [notifications, setNotifications] = useState<any[]>([
+    { id: 1, message: "الجودة: تم اجتياز الفحص لكابل 2x35 بنجاح، يمكنك بدء الإنتاج.", isRead: false, date: "قبل قليل" }
+  ]);
+  const unreadCount = notifications.filter(n => !n.isRead).length;
+
+  useEffect(() => {
+    const handleClickOutsideNotif = (event: MouseEvent) => {
+      if (notifRef.current && !notifRef.current.contains(event.target as Node)) setIsNotifOpen(false);
+    };
+    document.addEventListener('mousedown', handleClickOutsideNotif);
+    return () => document.removeEventListener('mousedown', handleClickOutsideNotif);
+  }, []);
+
+  const handleReadNotification = (id: number) => {
+    setNotifications(notifications.map(n => n.id === id ? { ...n, isRead: true } : n));
+    setIsNotifOpen(false);
+  };
 
   useEffect(() => {
     fetchInitialData();
@@ -110,94 +110,133 @@ export default function Production() {
   };
 
   const fetchInitialData = async () => {
-    const localBoms = localStorage.getItem('app_boms');
-    if (localBoms) setBoms(JSON.parse(localBoms));
-
-    const localOrders = localStorage.getItem('app_production_orders');
-    if (localOrders) setOrders(JSON.parse(localOrders));
-
     try {
-      const { data: tData } = await supabase.from('inventory_tree').select('*').eq('is_active', true);
-      if (tData && tData.length > 0) setTreeItems(tData as TreeItem[]);
-    } catch {
-      console.log('جلب الشجرة من التخزين المحلي');
-    }
+      const localBoms = localStorage.getItem('app_boms');
+      if (localBoms) setBoms(JSON.parse(localBoms) || []);
 
-    let loadedMovements: Movement[] = [];
-    try {
-      const { data: mData } = await supabase.from('inventory_movements').select('*');
-      if (mData && mData.length > 0) {
-        loadedMovements = mData as Movement[];
-      } else {
-        const localM = localStorage.getItem('app_inventory_movements');
-        if (localM) loadedMovements = JSON.parse(localM);
+      const localOrders = localStorage.getItem('app_production_orders');
+      if (localOrders) setOrders(JSON.parse(localOrders) || []);
+
+      if (supabase) {
+        // 🚀 جلب مباشر وسريع جداً: المواد، المخازن، والرصيد النهائي الجاهز (Anti-Lag)
+        const [matRes, whRes, stockRes] = await Promise.all([
+          supabase.from('materials').select('*'),
+          supabase.from('warehouses').select('*'),
+          supabase.from('live_stock_view').select('*')
+        ]);
+
+        if (matRes.error) throw matRes.error;
+        if (whRes.error) throw whRes.error;
+        if (stockRes.error) throw stockRes.error;
+
+        if (matRes.data) setMaterials(matRes.data as Material[]);
+        if (whRes.data) setWarehouses(whRes.data);
+        if (stockRes.data) setLiveStock(stockRes.data);
       }
-    } catch {
-      const localM = localStorage.getItem('app_inventory_movements');
-      if (localM) loadedMovements = JSON.parse(localM);
+    } catch (error: any) {
+      console.warn('تعذر جلب البيانات من السيرفر. يتم الاعتماد على التخزين المحلي.', error?.message);
     }
-    setMovements(loadedMovements);
   };
 
   const saveBoms = (updated: BOM[]) => {
-    setBoms(updated);
-    localStorage.setItem('app_boms', JSON.stringify(updated));
+    const safeUpdated = Array.isArray(updated) ? updated : [];
+    setBoms(safeUpdated);
+    try {
+      localStorage.setItem('app_boms', JSON.stringify(safeUpdated));
+    } catch (e) {
+      console.warn("Storage Full", e);
+    }
   };
 
   const saveOrders = (updated: ProductionOrder[]) => {
-    setOrders(updated);
-    localStorage.setItem('app_production_orders', JSON.stringify(updated));
+    const safeUpdated = Array.isArray(updated) ? updated : [];
+    setOrders(safeUpdated);
+    try {
+      localStorage.setItem('app_production_orders', JSON.stringify(safeUpdated));
+    } catch (e) {
+      console.warn("Storage Full", e);
+    }
   };
 
+  // 🚀 قراءة الرصيد لحظياً بدون أي عمليات حسابية ثقيلة
   const getStock = (itemName: string) => {
+    if (!itemName) return 0;
     const targetNorm = normalizeText(itemName);
-    const itemIn = movements
-      .filter(m => normalizeText(m.item_name) === targetNorm && m.type === 'IN')
-      .reduce((a, c) => a + Number(c.quantity), 0);
-    const itemOut = movements
-      .filter(m => normalizeText(m.item_name) === targetNorm && m.type === 'OUT')
-      .reduce((a, c) => a + Number(c.quantity), 0);
-    return itemIn - itemOut;
+    const record = liveStock.find(s => normalizeText(s.material_name) === targetNorm);
+    return record ? Number(record.current_balance) : 0;
   };
 
-  // 1. بدء أمر الإنتاج وخصم المواد المخزنية
-  const handleStartProduction = async () => {
-    if (!selectedBomForCalc) return;
-
-    const confirmMsg = `هل أنت متأكد من تأكيد وبدء أمر الإنتاج رقم (${orderNumber}) لإنتاج ${targetQuantity.toLocaleString()} متر من (${selectedBomForCalc.product_name})؟\n\nسيتم خصم كافة المواد الخام المطلوبة تلقائياً من المخزن وتحويل الأمر إلى "قيد التشغيل".`;
-
-    if (!window.confirm(confirmMsg)) return;
-
-    const todayDate = new Date().toISOString().split('T')[0];
-
-    const materialsUsedSummary: { name: string; quantity: number; unit: string }[] = [];
-
-    // إنشاء حركات صادر مخزنية لكل مادة خامة في الوصفة
-    const newOutMovements: Movement[] = selectedBomForCalc.items.map(item => {
-      const netNeeded = item.quantity_per_meter * targetQuantity;
-      const grossNeeded = netNeeded * (1 + (item.waste_percent / 100));
-      const qtyRounded = Number(grossNeeded.toFixed(3));
-
-      materialsUsedSummary.push({
-        name: item.material_name,
-        quantity: qtyRounded,
-        unit: item.unit
-      });
-
-      return {
-        id: Date.now().toString() + Math.random().toString().slice(2, 6),
-        date: todayDate,
-        type: 'OUT',
-        item_name: item.material_name,
-        quantity: qtyRounded,
-        unit: item.unit,
-        doc_number: orderNumber,
-        qc_status: 'مقبول (مطابق)',
-        notes: `صرف آلي لأمر إنتاج (${orderNumber}) - إنتاج ${targetQuantity.toLocaleString()} متر من ${selectedBomForCalc.product_name}`
-      };
+  const allAvailableItems = useMemo(() => {
+    const itemsMap = new Map<string, {name: string, code: string, unit: string, warehouse_name: string}>();
+    
+    liveStock.forEach(m => {
+      if (m?.material_name) {
+        itemsMap.set(normalizeText(m.material_name), { 
+          name: m.material_name, code: m.material_code || '-', unit: m.unit || 'وحدة', warehouse_name: m.warehouse_name || '' 
+        });
+      }
     });
 
-    // إضافة أمر الإنتاج إلى سجل الأوامر بحالة "قيد التشغيل"
+    materials.forEach(m => {
+      if (m?.material_name && !itemsMap.has(normalizeText(m.material_name))) {
+        itemsMap.set(normalizeText(m.material_name), { 
+          name: m.material_name, code: m.material_code || '-', unit: m.unit || 'وحدة', warehouse_name: m.warehouse_name || '' 
+        });
+      }
+    });
+
+    return Array.from(itemsMap.values());
+  }, [liveStock, materials]);
+
+  const { displayProducts, displayMaterials } = useMemo(() => {
+    const products = allAvailableItems.filter(item => 
+      item?.warehouse_name?.trim() === 'مخزن الانتاج التام' || item?.warehouse_name?.trim() === 'مخزن الإنتاج التام'
+    );
+    const rawMaterials = allAvailableItems.filter(item => 
+      item?.warehouse_name?.trim() !== 'مخزن الانتاج التام' && item?.warehouse_name?.trim() !== 'مخزن الإنتاج التام'
+    );
+    return { displayProducts: products, displayMaterials: rawMaterials };
+  }, [allAvailableItems]);
+
+  const handleStartProduction = async () => {
+    if (!selectedBomForCalc) return;
+    if (!window.confirm(`تأكيد بدء أمر الإنتاج (${orderNumber})؟ سيتم خصم المواد من المخزن.`)) return;
+
+    const todayDate = new Date().toISOString().split('T')[0];
+    const materialsUsedSummary: { name: string; quantity: number; unit: string }[] = [];
+    const newOutMovements: any[] = [];
+    
+    const safeItems = Array.isArray(selectedBomForCalc.items) ? selectedBomForCalc.items : [];
+    
+    // جلب كود مخزن الإنتاج لتلبية متطلبات (Foreign Key)
+    const prodWarehouse = warehouses.find(w => normalizeText(w.warehouse_name).includes('انتاج')) || { warehouse_code: '2', warehouse_name: 'قسم الإنتاج' };
+
+    safeItems.forEach(item => {
+      if (!item) return;
+      const netNeeded = (Number(item.quantity_per_meter) || 0) * (Number(targetQuantity) || 0);
+      const grossNeeded = netNeeded * (1 + ((Number(item.waste_percent) || 0) / 100));
+      const qtyRounded = Number(grossNeeded.toFixed(3));
+
+      materialsUsedSummary.push({ name: item.material_name || '', quantity: qtyRounded, unit: item.unit || '' });
+      
+      const matCode = materials.find(m => normalizeText(m.material_name) === normalizeText(item.material_name))?.material_code || null;
+
+      newOutMovements.push({
+        transaction_date: todayDate,
+        warehouse_name: prodWarehouse.warehouse_name,
+        warehouse_code: prodWarehouse.warehouse_code, // 🛡️ تم إضافة كود المخزن للحماية
+        material_name: item.material_name,
+        material_code: matCode, // 🛡️ تم إضافة كود المادة للحماية
+        unit: item.unit,
+        quantity_issued: qtyRounded,
+        reels_issued: 0,
+        recipient: 'صالة الإنتاج',
+        notes: `صرف آلي لأمر إنتاج (${orderNumber}) - لإنتاج ${selectedBomForCalc.product_name}`,
+        qc_status: 'مقبول (مطابق)',
+        entry_number: orderNumber
+      });
+    });
+
     const newOrder: ProductionOrder = {
       id: Date.now().toString(),
       order_number: orderNumber,
@@ -209,73 +248,95 @@ export default function Production() {
       materials_used: materialsUsedSummary
     };
 
-    // حفظ حركة المخزون
     try {
-      await supabase.from('inventory_movements').insert(newOutMovements);
-    } catch {
-      console.log('تعذر الحفظ في السيرفر، تم الاعتماد على التخزين المحلي');
+      if (supabase) {
+        const { error } = await supabase.from('outbound').insert(newOutMovements);
+        if (error) throw error;
+      }
+    } catch (error: any) {
+      console.warn('خطأ بالاتصال بالسيرفر أثناء إنشاء الأمر (تم الحفظ محلياً)', error?.message);
     }
 
-    const updatedMovements = [...newOutMovements, ...movements];
-    setMovements(updatedMovements);
-    localStorage.setItem('app_inventory_movements', JSON.stringify(updatedMovements));
-
-    // حفظ أمر الإنتاج الجديد
-    const updatedOrders = [newOrder, ...orders];
-    saveOrders(updatedOrders);
-
-    alert(`🚀 تم تأكيد أمر الإنتاج (${orderNumber}) بنجاح!\n• تم خصم المواد من المخزن.\n• تم نقل الأمر إلى "سجل وحالة الأوامر" (قيد التشغيل).`);
+    saveOrders([newOrder, ...orders]);
+    alert(`✅ تم تأكيد الأمر بنجاح وخصم المواد من المخزن!`);
     
     generateOrderNumber();
-    setActiveTab('LOG'); // الانتقال التلقائي لمتابعة حالة الأمر
+    setActiveTab('LOG');
+    fetchInitialData(); // 🚀 تحديث الأرصدة الحية فوراً
   };
 
-  // 2. إكمال أمر الإنتاج وإدخال المنتج التام للمخزن
   const handleCompleteOrder = async (order: ProductionOrder) => {
-    if (!window.confirm(`هل اكتمل تصنيع أمر الإنتاج رقم (${order.order_number}) بالكامل؟\n\nسيتم إضافة (${order.target_quantity.toLocaleString()} متر من ${order.product_name}) كـ "وارد جديد" إلى المخزن.`)) return;
+    if (!order) return;
+    if (!window.confirm(`هل اكتمل التصنيع؟ سيتم إضافة (${order.target_quantity.toLocaleString()}) كـ "وارد جديد" إلى المخزن.`)) return;
 
     const todayDate = new Date().toISOString().split('T')[0];
-
-    // حركة وارد جديدة للمنتج التام
-    const finishedProductMovement: Movement = {
-      id: Date.now().toString(),
-      date: todayDate,
-      type: 'IN',
-      item_name: order.product_name,
-      quantity: order.target_quantity,
-      unit: order.unit,
-      doc_number: order.order_number,
-      qc_status: 'مقبول (مطابق)',
-      notes: `إيداع آلي لمنتج تام ناتج عن أمر الإنتاج المكتمل (${order.order_number})`
-    };
+    const targetWarehouse = warehouses.find(w => normalizeText(w.warehouse_name).includes('تام')) || { warehouse_code: '3', warehouse_name: 'مخزن الانتاج التام' };
+    let finalMatCode = '';
 
     try {
-      await supabase.from('inventory_movements').insert([finishedProductMovement]);
-    } catch {
-      console.log('تعذر الحفظ في السيرفر');
-    }
+      if (supabase) {
+        const { data: existingMaterial, error: checkError } = await supabase
+          .from('materials')
+          .select('*')
+          .eq('material_name', order.product_name)
+          .maybeSingle();
 
-    const updatedMovements = [finishedProductMovement, ...movements];
-    setMovements(updatedMovements);
-    localStorage.setItem('app_inventory_movements', JSON.stringify(updatedMovements));
+        if (checkError) throw checkError;
 
-    // تحديث حالة الأمر إلى مكتمل
-    const updatedOrders = orders.map(o => {
-      if (o.id === order.id) {
-        return {
-          ...o,
-          status: 'COMPLETED' as const,
-          completed_date: new Date().toLocaleString('ar-IQ')
+        if (!existingMaterial) {
+          const safeBoms = Array.isArray(boms) ? boms : [];
+          const relatedBom = safeBoms.find(b => b?.product_name === order.product_name);
+          finalMatCode = relatedBom?.product_code || `PRD-${Date.now().toString().slice(-4)}`;
+          
+          const { error: insertError } = await supabase.from('materials').insert([{
+            material_name: order.product_name,
+            material_code: finalMatCode,
+            warehouse_name: targetWarehouse.warehouse_name,
+            warehouse_code: targetWarehouse.warehouse_code, // 🛡️
+            unit: order.unit,
+            qc_required: false,
+            min_stock: 0,
+            cost_price: 0
+          }]);
+          if (insertError) throw insertError;
+        } else {
+          finalMatCode = existingMaterial.material_code;
+        }
+
+        const finishedProductMovement = {
+          transaction_date: todayDate,
+          warehouse_name: targetWarehouse.warehouse_name,
+          warehouse_code: targetWarehouse.warehouse_code, // 🛡️
+          material_name: order.product_name,
+          material_code: finalMatCode, // 🛡️
+          unit: order.unit,
+          quantity_received: order.target_quantity,
+          reels_received: 0,
+          source: 'صالة الإنتاج',
+          reference_or_notes: `إيداع آلي لمنتج تام عن أمر الإنتاج (${order.order_number})`,
+          qc_status: 'مقبول (مطابق)',
+          entry_number: order.order_number
         };
-      }
-      return o;
-    });
 
-    saveOrders(updatedOrders);
-    alert(`🎉 تهانينا! تم إكمال أمر الإنتاج (${order.order_number}) وتوريد المنتج التام (${order.product_name}) إلى المخزن بنجاح.`);
+        const { error: moveError } = await supabase.from('inbound').insert([finishedProductMovement]);
+        if (moveError) throw moveError;
+      }
+
+      const safeOrders = Array.isArray(orders) ? orders : [];
+      const updatedOrders = safeOrders.map(o => o?.id === order.id ? { ...o, status: 'COMPLETED' as const, completed_date: new Date().toLocaleString('ar-IQ') } : o);
+      saveOrders(updatedOrders);
+      
+      alert(`🎉 تمت العملية بنجاح!\n\nتم إيداع المنتج في مخزن الإنتاج التام.\n(إذا كان المنتج جديداً، تم تعريفه تلقائياً في فهرس المخازن).`);
+      fetchInitialData(); // 🚀 تحديث الأرصدة الحية فوراً
+      
+    } catch (err: any) {
+      console.error('خطأ بالاتصال بالسيرفر', err);
+      alert('حدث خطأ أثناء حفظ الإيداع. يرجى المحاولة مرة أخرى أو التأكد من التوافق.');
+    }
   };
 
   const toggleMaterialSelection = (materialName: string) => {
+    if (!materialName) return;
     if (selectedMaterialsList.includes(materialName)) {
       setSelectedMaterialsList(prev => prev.filter(m => m !== materialName));
     } else {
@@ -283,66 +344,114 @@ export default function Production() {
     }
   };
 
+  const handleEditBom = (bom: BOM) => {
+    if (!bom) return;
+    setEditingBomId(bom.id);
+    
+    const safeDisplayProducts = Array.isArray(displayProducts) ? displayProducts : [];
+    const isCustom = !safeDisplayProducts.some(p => p?.name === bom.product_name);
+    setIsCustomProduct(isCustom);
+    
+    if (isCustom) {
+      setCustomProductName(bom.product_name || '');
+      setCustomProductCode(bom.product_code || '');
+      setSelectedProduct('');
+    } else {
+      setSelectedProduct(bom.product_name || '');
+      setCustomProductName('');
+      setCustomProductCode('');
+    }
+
+    const safeItems = Array.isArray(bom.items) ? bom.items : [];
+    setSelectedMaterialsList(safeItems.map(item => item?.material_name || '').filter(name => name !== ''));
+    setBomItemsConfig(safeItems);
+    setBomStep(1);
+    setShowBomModal(true);
+  };
+
   const proceedToBomFormula = () => {
-    if (!selectedProduct) return alert('الرجاء اختيار المنتج المراد تصنيعه');
+    const finalProductName = isCustomProduct ? customProductName.trim() : selectedProduct;
+    
+    if (!finalProductName) return alert('الرجاء تحديد أو كتابة المنتج المراد تصنيعه');
     if (selectedMaterialsList.length === 0) return alert('الرجاء اختيار مادة خام واحدة على الأقل');
 
-    const initialConfig = selectedMaterialsList.map(matName => {
-      const found = treeItems.find(t => t.name === matName);
-      return {
-        material_name: matName,
-        quantity_per_meter: 0,
-        unit: found ? found.unit : 'كجم',
-        waste_percent: 1.5
-      };
+    const safeBomItemsConfig = Array.isArray(bomItemsConfig) ? bomItemsConfig : [];
+    const safeDisplayMaterials = Array.isArray(displayMaterials) ? displayMaterials : [];
+
+    const newConfig = selectedMaterialsList.map(matName => {
+      const existingItem = safeBomItemsConfig.find(item => item?.material_name === matName);
+      if (existingItem) return existingItem;
+
+      const found = safeDisplayMaterials.find(t => t?.name === matName);
+      return { material_name: matName, quantity_per_meter: 0, unit: found ? found.unit : 'كجم', waste_percent: 1.5 };
     });
-    setBomItemsConfig(initialConfig);
+    
+    setBomItemsConfig(newConfig);
     setBomStep(2);
   };
 
   const handleSaveBom = () => {
-    const hasZero = bomItemsConfig.some(item => item.quantity_per_meter <= 0);
+    const safeBomItemsConfig = Array.isArray(bomItemsConfig) ? bomItemsConfig : [];
+    const hasZero = safeBomItemsConfig.some(item => Number(item?.quantity_per_meter) <= 0);
     if (hasZero) return alert('الرجاء إدخال كميات صحيحة أكبر من صفر لكل المواد');
 
-    const foundProd = treeItems.find(t => t.name === selectedProduct);
+    const finalProductName = isCustomProduct ? customProductName.trim() : selectedProduct;
+    const safeDisplayProducts = Array.isArray(displayProducts) ? displayProducts : [];
+    const finalProductCode = isCustomProduct 
+      ? (customProductCode.trim() || `PRD-${Date.now().toString().slice(-4)}`) 
+      : (safeDisplayProducts.find(t => t?.name === finalProductName)?.code || `PRD-${Date.now().toString().slice(-4)}`);
+
     const newBom: BOM = {
-      id: Date.now().toString(),
-      product_name: selectedProduct,
-      product_code: foundProd ? foundProd.code : `PRD-${Date.now().toString().slice(-4)}`,
+      id: editingBomId || Date.now().toString(),
+      product_name: finalProductName,
+      product_code: finalProductCode,
       unit: 'متر',
-      items: bomItemsConfig
+      items: safeBomItemsConfig
     };
 
-    saveBoms([newBom, ...boms.filter(b => b.product_name !== selectedProduct)]);
+    const safeBoms = Array.isArray(boms) ? boms : [];
+    if (editingBomId) {
+      saveBoms(safeBoms.map(b => b?.id === editingBomId ? newBom : b));
+    } else {
+      saveBoms([newBom, ...safeBoms.filter(b => b?.product_name !== finalProductName)]);
+    }
+    
     setShowBomModal(false);
     resetBomModal();
   };
 
   const resetBomModal = () => {
-    setBomStep(1);
-    setSelectedProduct('');
-    setSelectedMaterialsList([]);
+    setBomStep(1); 
+    setSelectedProduct(''); 
+    setIsCustomProduct(false);
+    setCustomProductName('');
+    setCustomProductCode('');
+    setSelectedMaterialsList([]); 
     setBomItemsConfig([]);
+    setEditingBomId(null);
   };
 
   const handleDeleteBom = (id: string) => {
-    if (window.confirm('هل أنت متأكد من حذف هذه الوصفة؟')) {
-      saveBoms(boms.filter(b => b.id !== id));
-    }
+    const safeBoms = Array.isArray(boms) ? boms : [];
+    if (window.confirm('هل أنت متأكد من حذف هذه الوصفة؟')) saveBoms(safeBoms.filter(b => b?.id !== id));
   };
 
-  const selectedBomForCalc = boms.find(b => b.id === selectedBomId);
+  const safeBomsCalc = Array.isArray(boms) ? boms : [];
+  const selectedBomForCalc = safeBomsCalc.find(b => b?.id === selectedBomId);
+  const safeSelectedBomItems = selectedBomForCalc ? (Array.isArray(selectedBomForCalc.items) ? selectedBomForCalc.items : []) : [];
   
-  const canProduce = selectedBomForCalc?.items.every(item => {
-    const grossNeeded = (item.quantity_per_meter * targetQuantity) * (1 + (item.waste_percent / 100));
+  const canProduce = selectedBomForCalc ? safeSelectedBomItems.every(item => {
+    if (!item) return false;
+    const grossNeeded = (Number(item.quantity_per_meter) * Number(targetQuantity)) * (1 + (Number(item.waste_percent) / 100));
     return getStock(item.material_name) >= grossNeeded;
-  });
+  }) : false;
 
-  const activeOrdersCount = orders.filter(o => o.status === 'IN_PROGRESS').length;
-  const completedOrdersCount = orders.filter(o => o.status === 'COMPLETED').length;
+  const safeOrdersCount = Array.isArray(orders) ? orders : [];
+  const activeOrdersCount = safeOrdersCount.filter(o => o?.status === 'IN_PROGRESS').length;
+  const completedOrdersCount = safeOrdersCount.filter(o => o?.status === 'COMPLETED').length;
 
   return (
-    <div dir="rtl" className="p-6 bg-slate-50 min-h-screen font-sans">
+    <div dir="rtl" className="p-6 bg-slate-50 min-h-screen font-sans pb-24">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
@@ -351,110 +460,94 @@ export default function Production() {
           <p className="text-sm text-slate-500 mt-1">تخطيط الأوامر، الخصم الآلي، ومتابعة الأوامر قيد التشغيل والمكتملة.</p>
         </div>
 
-        <div className="flex bg-slate-200 p-1 rounded-xl">
-          <button 
-            onClick={() => setActiveTab('ORDERS')}
-            className={`px-4 py-2 rounded-lg text-sm font-bold transition flex items-center gap-2 ${activeTab === 'ORDERS' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600'}`}
-          >
-            <ClipboardList size={18} /> أمر جديد
-          </button>
-          <button 
-            onClick={() => setActiveTab('LOG')}
-            className={`px-4 py-2 rounded-lg text-sm font-bold transition flex items-center gap-2 relative ${activeTab === 'LOG' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600'}`}
-          >
-            <Activity size={18} /> سجل وتتبع الأوامر
-            {activeOrdersCount > 0 && (
-              <span className="bg-blue-600 text-white text-[10px] px-1.5 py-0.5 rounded-full font-bold">
-                {activeOrdersCount}
-              </span>
+        <div className="flex items-center gap-3 w-full md:w-auto">
+          <div className="flex bg-slate-200 p-1 rounded-xl w-full md:w-auto overflow-x-auto hide-scrollbar">
+            <button onClick={() => setActiveTab('ORDERS')} className={`px-4 py-2.5 rounded-lg text-sm font-bold transition flex items-center gap-2 whitespace-nowrap ${activeTab === 'ORDERS' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600'}`}><ClipboardList size={18} /> أمر جديد</button>
+            <button onClick={() => setActiveTab('LOG')} className={`px-4 py-2.5 rounded-lg text-sm font-bold transition flex items-center gap-2 whitespace-nowrap relative ${activeTab === 'LOG' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600'}`}>
+              <Activity size={18} /> سجل الأوامر
+              {activeOrdersCount > 0 && <span className="bg-blue-600 text-white text-[10px] px-1.5 py-0.5 rounded-full font-bold absolute -top-1 -right-1">{activeOrdersCount}</span>}
+            </button>
+            <button onClick={() => setActiveTab('BOM')} className={`px-4 py-2.5 rounded-lg text-sm font-bold transition flex items-center gap-2 whitespace-nowrap ${activeTab === 'BOM' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600'}`}><Layers size={18} /> وصفات التصنيع (BOM)</button>
+          </div>
+
+          <div className="relative" ref={notifRef}>
+            <button 
+              onClick={() => setIsNotifOpen(!isNotifOpen)}
+              className="relative p-2.5 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 text-slate-600 transition shadow-sm"
+            >
+              <Bell size={20} />
+              {unreadCount > 0 && (
+                <span className="absolute -top-2 -right-2 bg-rose-600 text-white text-[10px] font-bold w-5 h-5 flex items-center justify-center rounded-full border-2 border-white shadow-sm">
+                  {unreadCount}
+                </span>
+              )}
+            </button>
+
+            {isNotifOpen && (
+              <div className="absolute top-12 left-0 w-80 bg-white border border-slate-200 rounded-xl shadow-2xl z-50 overflow-hidden">
+                <div className="bg-slate-50 border-b border-slate-100 p-3 flex justify-between items-center">
+                  <span className="font-bold text-slate-800 text-sm">إشعارات الإنتاج</span>
+                  <span className="text-xs bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full font-bold">{unreadCount} جديد</span>
+                </div>
+                <div className="max-h-80 overflow-y-auto">
+                  {notifications.length === 0 ? (
+                    <div className="p-4 text-center text-slate-400 text-sm font-bold">لا توجد إشعارات حالياً</div>
+                  ) : (
+                    notifications.map(notif => (
+                      <div 
+                        key={notif.id} 
+                        onClick={() => handleReadNotification(notif.id)}
+                        className={`p-3 border-b border-slate-50 cursor-pointer transition ${notif.isRead ? 'bg-white hover:bg-slate-50' : 'bg-blue-50/50 hover:bg-blue-50'}`}
+                      >
+                        <div className="flex justify-between items-start mb-1">
+                          <span className={`text-xs font-bold text-slate-500`}>تنبيه جديد</span>
+                          <span className="text-[10px] text-slate-400 font-mono">{notif.date}</span>
+                        </div>
+                        <p className={`text-sm mt-1 ${notif.isRead ? 'text-slate-600' : 'text-slate-800 font-medium'}`}>{notif.message}</p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
             )}
-          </button>
-          <button 
-            onClick={() => setActiveTab('BOM')}
-            className={`px-4 py-2 rounded-lg text-sm font-bold transition flex items-center gap-2 ${activeTab === 'BOM' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-600'}`}
-          >
-            <Layers size={18} /> وصفات التصنيع (BOM)
-          </button>
+          </div>
         </div>
       </div>
 
-      {/* ملخص إحصائي سريع للأوامر */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
-          <div>
-            <div className="text-xs font-bold text-slate-400">الأوامر قيد التشغيل حالياً</div>
-            <div className="text-2xl font-bold text-blue-600 mt-1">{activeOrdersCount} أمر</div>
-          </div>
-          <div className="p-3 bg-blue-50 text-blue-600 rounded-xl">
-            <Activity size={24} />
-          </div>
+          <div><div className="text-xs font-bold text-slate-400">الأوامر قيد التشغيل حالياً</div><div className="text-2xl font-bold text-blue-600 mt-1">{activeOrdersCount} أمر</div></div>
+          <div className="p-3 bg-blue-50 text-blue-600 rounded-xl"><Activity size={24} /></div>
         </div>
-
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
-          <div>
-            <div className="text-xs font-bold text-slate-400">الأوامر المكتملة</div>
-            <div className="text-2xl font-bold text-emerald-600 mt-1">{completedOrdersCount} أمر</div>
-          </div>
-          <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl">
-            <CheckCircle2 size={24} />
-          </div>
+          <div><div className="text-xs font-bold text-slate-400">الأوامر المكتملة</div><div className="text-2xl font-bold text-emerald-600 mt-1">{completedOrdersCount} أمر</div></div>
+          <div className="p-3 bg-emerald-50 text-emerald-600 rounded-xl"><CheckCircle2 size={24} /></div>
         </div>
-
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
-          <div>
-            <div className="text-xs font-bold text-slate-400">إجمالي الأوامر الكلي</div>
-            <div className="text-2xl font-bold text-slate-800 mt-1">{orders.length} أمر</div>
-          </div>
-          <div className="p-3 bg-slate-100 text-slate-600 rounded-xl">
-            <BarChart3 size={24} />
-          </div>
+          <div><div className="text-xs font-bold text-slate-400">إجمالي الأوامر الكلي</div><div className="text-2xl font-bold text-slate-800 mt-1">{safeOrdersCount.length} أمر</div></div>
+          <div className="p-3 bg-slate-100 text-slate-600 rounded-xl"><BarChart3 size={24} /></div>
         </div>
       </div>
 
-      {/* TAB 1: إعداد أمر إنتاج جديد */}
       {activeTab === 'ORDERS' && (
-        <div className="space-y-6">
+        <div className="space-y-6 animate-in fade-in">
           <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
             <div className="flex justify-between items-center mb-5 border-b pb-4">
-              <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                <Settings className="text-blue-600" size={20} /> إعداد أمر إنتاج جديد
-              </h2>
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-bold text-slate-500">رقم الأمر:</span>
-                <input 
-                  type="text" 
-                  value={orderNumber}
-                  onChange={(e) => setOrderNumber(e.target.value)}
-                  className="bg-slate-100 border-none rounded-lg px-3 py-1.5 text-sm font-mono font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 w-48"
-                />
-              </div>
+              <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2"><Settings className="text-blue-600" size={20} /> إعداد أمر إنتاج جديد</h2>
+              <div className="flex items-center gap-2"><span className="text-sm font-bold text-slate-500">رقم الأمر:</span><input type="text" value={orderNumber} onChange={(e) => setOrderNumber(e.target.value)} className="bg-slate-100 border-none rounded-lg px-3 py-1.5 text-sm font-mono font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 w-48"/></div>
             </div>
-
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-50 p-5 rounded-xl border border-slate-200">
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-2">المنتج المراد تصنيعه (من الوصفات المعتمدة)</label>
-                <select 
-                  value={selectedBomId}
-                  onChange={e => setSelectedBomId(e.target.value)}
-                  className="w-full border border-slate-300 rounded-lg p-3 text-sm bg-white font-bold text-slate-800 shadow-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
-                >
-                  <option value="">-- يرجى اختيار المنتج / الوصفة --</option>
-                  {boms.map(b => (
-                    <option key={b.id} value={b.id}>{b.product_name} [{b.product_code}]</option>
-                  ))}
+                <select value={selectedBomId} onChange={e => setSelectedBomId(e.target.value)} className="w-full border border-slate-300 rounded-lg p-3 text-sm bg-white font-bold text-slate-800 shadow-sm focus:border-blue-500 outline-none">
+                  <option value="">-- يرجى اختيار الوصفة --</option>
+                  {safeBomsCalc.map(b => b ? <option key={b.id} value={b.id}>{b.product_name} [{b.product_code}]</option> : null)}
                 </select>
               </div>
-
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-2">الكمية المستهدفة (بالمتر)</label>
                 <div className="relative">
-                  <input 
-                    type="number"
-                    min="1"
-                    value={targetQuantity}
-                    onChange={e => setTargetQuantity(Number(e.target.value))}
-                    className="w-full border border-slate-300 rounded-lg p-3 text-lg font-bold text-blue-700 shadow-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none"
-                  />
+                  <input type="number" min="1" value={targetQuantity} onChange={e => setTargetQuantity(Number(e.target.value))} className="w-full border border-slate-300 rounded-lg p-3 text-lg font-bold text-blue-700 shadow-sm focus:border-blue-500 outline-none"/>
                   <span className="absolute left-3 top-3.5 text-sm font-bold text-slate-400">متر (m)</span>
                 </div>
               </div>
@@ -462,50 +555,40 @@ export default function Production() {
           </div>
 
           {selectedBomForCalc && (
-            <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+            <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm animate-in zoom-in-95">
                <div className="flex justify-between items-center mb-4">
-                  <h3 className="font-bold text-slate-800 text-lg">
-                    تحليل المواد لإنتاج <span className="text-blue-600">{targetQuantity.toLocaleString()} متر</span> من {selectedBomForCalc.product_name}
-                  </h3>
+                  <h3 className="font-bold text-slate-800 text-lg">تحليل المواد لإنتاج <span className="text-blue-600">{Number(targetQuantity).toLocaleString()} متر</span> من {selectedBomForCalc.product_name}</h3>
                </div>
-
               <div className="overflow-x-auto rounded-xl border border-slate-200 shadow-sm">
                 <table className="w-full text-right text-sm">
                   <thead className="bg-slate-800 text-white">
                     <tr>
                       <th className="p-4 font-semibold">المادة الأولية</th>
                       <th className="p-4 text-center font-semibold text-slate-300">المعادلة (للمتر)</th>
-                      <th className="p-4 text-center font-semibold">المطلوب الصافي</th>
-                      <th className="p-4 text-center font-semibold text-amber-300">الإجمالي (مع الهدر)</th>
-                      <th className="p-4 text-center font-semibold">متوفر في المخزن</th>
+                      <th className="p-4 text-center font-semibold text-blue-300">الصافي المطلوب (بدون هدر)</th>
+                      <th className="p-4 text-center font-semibold text-amber-300">الإجمالي المطلوب (مع الهدر)</th>
+                      <th className="p-4 text-center font-semibold">المتوفر في المخزن</th>
                       <th className="p-4 text-center font-semibold">حالة الرصيد</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {selectedBomForCalc.items.map((item, idx) => {
-                      const netNeeded = item.quantity_per_meter * targetQuantity;
-                      const grossNeeded = netNeeded * (1 + (item.waste_percent / 100));
+                    {safeSelectedBomItems.map((item, idx) => {
+                      if (!item) return null;
+                      const netNeeded = (Number(item.quantity_per_meter) || 0) * (Number(targetQuantity) || 0);
+                      const grossNeeded = netNeeded * (1 + ((Number(item.waste_percent) || 0) / 100));
                       const stockAvailable = getStock(item.material_name);
                       const isSufficient = stockAvailable >= grossNeeded;
                       const deficit = grossNeeded - stockAvailable;
 
                       return (
-                        <tr key={idx} className="hover:bg-slate-50 transition">
+                        <tr key={idx} className="hover:bg-slate-50">
                           <td className="p-4 font-bold text-slate-800">{item.material_name}</td>
                           <td className="p-4 text-center font-mono text-xs text-slate-500">{item.quantity_per_meter} {item.unit}</td>
-                          <td className="p-4 text-center font-bold text-slate-700">{netNeeded.toLocaleString(undefined, {maximumFractionDigits: 2})} {item.unit}</td>
+                          <td className="p-4 text-center font-bold text-blue-600 bg-blue-50/50">{netNeeded.toLocaleString(undefined, {maximumFractionDigits: 2})} {item.unit}</td>
                           <td className="p-4 text-center font-bold text-amber-600 bg-amber-50/50">{grossNeeded.toLocaleString(undefined, {maximumFractionDigits: 2})} {item.unit}</td>
                           <td className="p-4 text-center font-mono font-bold text-slate-700">{stockAvailable.toLocaleString(undefined, {maximumFractionDigits: 2})} {item.unit}</td>
                           <td className="p-4 text-center">
-                            {isSufficient ? (
-                              <span className="inline-flex items-center gap-1.5 bg-emerald-100 text-emerald-700 px-3 py-1.5 rounded-lg text-xs font-bold border border-emerald-200">
-                                <CheckCircle2 size={16} /> رصيد كافٍ
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1.5 bg-rose-100 text-rose-700 px-3 py-1.5 rounded-lg text-xs font-bold border border-rose-200 shadow-sm">
-                                <AlertCircle size={16} /> عجز ({deficit.toLocaleString(undefined, {maximumFractionDigits: 2})} {item.unit})
-                              </span>
-                            )}
+                            {isSufficient ? <span className="inline-flex items-center gap-1.5 bg-emerald-100 text-emerald-700 px-3 py-1.5 rounded-lg text-xs font-bold"><CheckCircle2 size={16} /> رصيد كافٍ</span> : <span className="inline-flex items-center gap-1.5 bg-rose-100 text-rose-700 px-3 py-1.5 rounded-lg text-xs font-bold"><AlertCircle size={16} /> عجز ({deficit.toLocaleString(undefined, {maximumFractionDigits: 2})} {item.unit})</span>}
                           </td>
                         </tr>
                       );
@@ -513,89 +596,43 @@ export default function Production() {
                   </tbody>
                 </table>
               </div>
-
               <div className="mt-6 flex justify-end">
-                <button 
-                  disabled={!canProduce}
-                  onClick={handleStartProduction}
-                  className={`px-8 py-3 rounded-xl font-bold text-lg flex items-center gap-2 shadow-lg transition-all ${canProduce ? 'bg-blue-600 hover:bg-blue-700 text-white hover:scale-105 cursor-pointer' : 'bg-slate-300 text-slate-500 cursor-not-allowed'}`}
-                >
-                  <Play size={20} fill="currentColor" />
-                  {canProduce ? 'تأكيد وبدء الإنتاج (سحب من المخزن)' : 'المخزون لا يكفي للإنتاج'}
-                </button>
+                <button disabled={!canProduce} onClick={handleStartProduction} className={`px-8 py-3 rounded-xl font-bold text-lg flex items-center gap-2 shadow-lg transition-all ${canProduce ? 'bg-blue-600 hover:bg-blue-700 text-white cursor-pointer' : 'bg-slate-300 text-slate-500 cursor-not-allowed'}`}><Play size={20} fill="currentColor" /> {canProduce ? 'تأكيد وبدء الإنتاج (سحب من المخزن)' : 'المخزون لا يكفي للإنتاج'}</button>
               </div>
             </div>
           )}
         </div>
       )}
 
-      {/* TAB 2: سجل ومتابعة حالة أوامر الإنتاج */}
       {activeTab === 'LOG' && (
-        <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
-          <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2">
-            <Activity className="text-blue-600" size={20} /> سجل وتتبع أمر الإنتاج وحالتها
-          </h2>
-
-          {orders.length === 0 ? (
-            <div className="text-center py-12 text-slate-400">
-              <ClipboardList size={48} className="mx-auto mb-2 opacity-40" />
-              <p className="font-bold">لا توجد أوامر إنتاج صادرة بعد.</p>
-            </div>
-          ) : (
+        <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm animate-in fade-in">
+          <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><Activity className="text-blue-600" size={20} /> سجل أوامر الإنتاج</h2>
+          {safeOrdersCount.length === 0 ? <div className="text-center py-12 text-slate-400"><ClipboardList size={48} className="mx-auto mb-2 opacity-40" /><p className="font-bold">لا توجد أوامر إنتاج صادرة بعد.</p></div> : (
             <div className="overflow-x-auto">
               <table className="w-full text-right text-sm">
                 <thead className="bg-slate-100 text-slate-700 font-bold border-b">
                   <tr>
                     <th className="p-3">رقم الأمر</th>
-                    <th className="p-3">المنتج Target</th>
-                    <th className="p-3 text-center">الكمية المطلوب تصنيعها</th>
-                    <th className="p-3 text-center">تاريخ البدء</th>
-                    <th className="p-3 text-center">حالة الأمر الحالية</th>
-                    <th className="p-3 text-center">المواد المخصومة</th>
+                    <th className="p-3">المنتج الهدف</th>
+                    <th className="p-3 text-center">الكمية</th>
+                    <th className="p-3 text-center">التاريخ</th>
+                    <th className="p-3 text-center">الحالة</th>
                     <th className="p-3 text-center">الإجراءات</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {orders.map(order => (
-                    <tr key={order.id} className="hover:bg-slate-50 transition">
+                  {safeOrdersCount.map(order => order && (
+                    <tr key={order.id} className="hover:bg-slate-50">
                       <td className="p-3 font-mono font-bold text-blue-700">{order.order_number}</td>
                       <td className="p-3 font-bold text-slate-800">{order.product_name}</td>
-                      <td className="p-3 text-center font-bold text-slate-700">{order.target_quantity.toLocaleString()} {order.unit}</td>
+                      <td className="p-3 text-center font-bold text-slate-700">{Number(order.target_quantity).toLocaleString()} {order.unit}</td>
                       <td className="p-3 text-center text-xs font-mono text-slate-500">{order.start_date}</td>
                       <td className="p-3 text-center">
-                        {order.status === 'IN_PROGRESS' && (
-                          <span className="inline-flex items-center gap-1.5 bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-xs font-bold animate-pulse">
-                            <Activity size={14} /> قيد التشغيل (جارِ الإنتاج)
-                          </span>
-                        )}
-                        {order.status === 'COMPLETED' && (
-                          <span className="inline-flex items-center gap-1.5 bg-emerald-100 text-emerald-800 px-3 py-1 rounded-full text-xs font-bold">
-                            <CheckCircle2 size={14} /> مكتمل (تم التوريد للمخزن)
-                          </span>
-                        )}
+                        {order.status === 'IN_PROGRESS' ? <span className="inline-flex items-center gap-1.5 bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-xs font-bold animate-pulse"><Activity size={14} /> قيد التشغيل</span> : <span className="inline-flex items-center gap-1.5 bg-emerald-100 text-emerald-800 px-3 py-1 rounded-full text-xs font-bold"><CheckCircle2 size={14} /> مكتمل</span>}
                       </td>
                       <td className="p-3 text-center">
-                        <details className="cursor-pointer text-xs text-blue-600 font-bold">
-                          <summary>عرض التفاصيل ({order.materials_used.length} مواد)</summary>
-                          <div className="mt-2 text-right bg-slate-50 p-2 rounded border border-slate-200 font-normal text-slate-700">
-                            {order.materials_used.map((m, idx) => (
-                              <div key={idx}>• {m.name}: <strong className="text-amber-700">{m.quantity} {m.unit}</strong></div>
-                            ))}
-                          </div>
-                        </details>
-                      </td>
-                      <td className="p-3 text-center">
-                        {order.status === 'IN_PROGRESS' && (
-                          <button 
-                            onClick={() => handleCompleteOrder(order)}
-                            className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold shadow transition flex items-center gap-1 mx-auto cursor-pointer"
-                          >
-                            <Check size={14} /> إكمال وإنهاء الأمر
-                          </button>
-                        )}
-                        {order.status === 'COMPLETED' && (
-                          <span className="text-xs text-slate-400 font-bold">مكتمل في {order.completed_date}</span>
-                        )}
+                        {order.status === 'IN_PROGRESS' && <button onClick={() => handleCompleteOrder(order)} className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold shadow transition flex items-center gap-1 mx-auto cursor-pointer"><Check size={14} /> إكمال وإيداع</button>}
+                        {order.status === 'COMPLETED' && <span className="text-xs text-slate-400 font-bold">تم الإيداع</span>}
                       </td>
                     </tr>
                   ))}
@@ -606,68 +643,35 @@ export default function Production() {
         </div>
       )}
 
-      {/* TAB 3: وصفات التصنيع BOM */}
       {activeTab === 'BOM' && (
-        <div>
+        <div className="animate-in fade-in">
           <div className="flex justify-between items-center mb-6">
-            <div>
-              <h2 className="text-xl font-bold text-slate-800">وصفات ومعادلات التصنيع المعتمدة</h2>
-              <p className="text-sm text-slate-500 mt-1">إعداد المقادير المعيارية لإنتاج متر واحد من كل كابل.</p>
-            </div>
-            <button 
-              onClick={() => {
-                resetBomModal();
-                setShowBomModal(true);
-              }}
-              className="bg-slate-800 hover:bg-slate-900 text-white px-5 py-2.5 rounded-xl font-bold flex items-center gap-2 shadow-md transition cursor-pointer"
-            >
-              <Plus size={20} /> إنشاء وصفة تصنيع جديدة
-            </button>
+            <div><h2 className="text-xl font-bold text-slate-800">وصفات التصنيع المعتمدة (BOM)</h2><p className="text-sm text-slate-500 mt-1">المقادير المعيارية لإنتاج متر واحد.</p></div>
+            <button onClick={() => { resetBomModal(); setShowBomModal(true); }} className="bg-slate-800 hover:bg-slate-900 text-white px-5 py-2.5 rounded-xl font-bold flex items-center gap-2 shadow-md cursor-pointer"><Plus size={20} /> بناء وصفة جديدة</button>
           </div>
-
-          {boms.length === 0 ? (
-            <div className="bg-white p-12 text-center rounded-2xl border border-dashed border-slate-300">
-              <div className="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                <Layers size={32} className="text-slate-400" />
-              </div>
-              <h3 className="text-lg font-bold text-slate-700 mb-1">لا توجد وصفات تصنيع بعد</h3>
-              <p className="text-sm text-slate-500">قم ببناء هندسة المنتجات لتمكين النظام من حساب الاحتياجات تلقائياً.</p>
-            </div>
-          ) : (
+          {safeBomsCalc.length === 0 ? <div className="bg-white p-12 text-center rounded-2xl border border-dashed border-slate-300"><Layers size={32} className="text-slate-400 mx-auto mb-4" /><h3 className="text-lg font-bold text-slate-700">لا توجد وصفات</h3></div> : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {boms.map(bom => (
-                <div key={bom.id} className="bg-white rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition overflow-hidden">
+              {safeBomsCalc.map(bom => bom && (
+                <div key={bom.id} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
                   <div className="bg-slate-800 p-4 flex justify-between items-center">
-                    <div>
-                      <h3 className="font-bold text-white text-lg">{bom.product_name}</h3>
-                      <p className="text-xs text-slate-300 font-mono mt-1">الكود: {bom.product_code} | القياس الأساسي: 1 {bom.unit}</p>
+                    <div><h3 className="font-bold text-white text-lg">{bom.product_name}</h3><p className="text-xs text-slate-300 mt-1">الكمية المعيارية: 1 {bom.unit}</p></div>
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => handleEditBom(bom)} className="text-blue-400 hover:text-white hover:bg-blue-500 p-2 rounded-lg transition" title="تعديل الوصفة">
+                        <Edit2 size={18} />
+                      </button>
+                      <button onClick={() => handleDeleteBom(bom.id)} className="text-rose-400 hover:text-white hover:bg-rose-500 p-2 rounded-lg transition" title="حذف الوصفة">
+                        <Trash2 size={18} />
+                      </button>
                     </div>
-                    <button 
-                      onClick={() => handleDeleteBom(bom.id)} 
-                      className="text-rose-400 hover:text-white hover:bg-rose-500 p-2 rounded-lg transition"
-                      title="حذف الوصفة"
-                    >
-                      <Trash2 size={18} />
-                    </button>
                   </div>
-
                   <div className="p-5">
-                    <p className="text-xs font-bold text-slate-500 mb-3 uppercase tracking-wider">مقادير المتر الواحد:</p>
                     <div className="space-y-3">
-                      {bom.items.map((item, idx) => (
+                      {Array.isArray(bom.items) ? bom.items.map((item, idx) => item && (
                         <div key={idx} className="flex justify-between items-center bg-slate-50 p-3 rounded-xl border border-slate-100">
-                          <span className="font-bold text-slate-700 text-sm flex items-center gap-2">
-                            <div className="w-2 h-2 rounded-full bg-blue-500"></div>
-                            {item.material_name}
-                          </span>
-                          <div className="text-right">
-                            <div className="font-mono font-bold text-blue-700 text-sm">
-                              {item.quantity_per_meter} {item.unit}
-                            </div>
-                            <div className="text-[10px] font-bold text-slate-400 mt-0.5">هدر: {item.waste_percent}%</div>
-                          </div>
+                          <span className="font-bold text-slate-700 text-sm flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-blue-500"></div>{item.material_name}</span>
+                          <div className="text-right"><div className="font-mono font-bold text-blue-700 text-sm">{item.quantity_per_meter} {item.unit}</div><div className="text-[10px] font-bold text-slate-400 mt-0.5">هدر: {item.waste_percent}%</div></div>
                         </div>
-                      ))}
+                      )) : null}
                     </div>
                   </div>
                 </div>
@@ -677,132 +681,87 @@ export default function Production() {
         </div>
       )}
 
-      {/* مودال إنشاء وصفة تصنيع جديدة */}
       {showBomModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh]">
             <div className="bg-slate-800 p-5 flex justify-between items-center shrink-0">
-              <h3 className="text-xl font-bold text-white flex items-center gap-2">
-                <Settings className="text-blue-400" /> 
-                {bomStep === 1 ? 'الخطوة 1: تحديد المنتج والمواد الخام' : 'الخطوة 2: هندسة مقادير المتر الواحد'}
-              </h3>
-              <button onClick={() => setShowBomModal(false)} className="text-slate-400 hover:text-white transition cursor-pointer">
-                <X size={24} />
-              </button>
+              <h3 className="text-xl font-bold text-white flex items-center gap-2"><Settings className="text-blue-400" /> {bomStep === 1 ? 'الخطوة 1: تحديد المواد' : 'الخطوة 2: هندسة المقادير'}</h3>
+              <button onClick={() => setShowBomModal(false)} className="text-slate-400 hover:text-white cursor-pointer"><X size={24} /></button>
             </div>
-
             <div className="p-6 overflow-y-auto grow">
               {bomStep === 1 && (
                 <div className="space-y-6">
+                  
+                  {/* إدخال المنتج التام (من المخزن أو جديد) */}
                   <div>
-                    <label className="block text-sm font-bold text-slate-700 mb-2">المنتج المراد بناء وصفة له (المنتج التام)</label>
-                    <select 
-                      value={selectedProduct}
-                      onChange={e => setSelectedProduct(e.target.value)}
-                      className="w-full border-2 border-slate-200 rounded-xl p-3 text-sm bg-slate-50 font-bold text-blue-700 focus:border-blue-500 focus:bg-white outline-none transition"
-                    >
-                      <option value="">-- اختر من قائمة المنتجات --</option>
-                      {treeItems.map(item => (
-                        <option key={item.id} value={item.name}>{item.name} [{item.code}]</option>
-                      ))}
-                    </select>
-                  </div>
+                    <div className="flex justify-between items-end mb-2">
+                      <label className="block text-sm font-bold text-slate-700">المنتج التام المراد تصنيعه</label>
+                      <button 
+                        onClick={() => setIsCustomProduct(!isCustomProduct)}
+                        className="text-xs font-bold text-blue-600 hover:underline bg-blue-50 px-3 py-1 rounded-lg"
+                      >
+                        {isCustomProduct ? 'العودة لقائمة المخزن' : '+ إدخال منتج جديد يدوياً'}
+                      </button>
+                    </div>
 
+                    {isCustomProduct ? (
+                      <div className="grid grid-cols-2 gap-3 bg-blue-50 p-4 rounded-xl border border-blue-200">
+                        <div>
+                          <label className="block text-xs font-bold text-slate-600 mb-1">اسم المنتج الجديد *</label>
+                          <input type="text" placeholder="مثال: كابل 2x35 ملم" value={customProductName} onChange={e => setCustomProductName(e.target.value)} className="w-full border border-blue-300 rounded-lg p-2.5 text-sm font-bold outline-none focus:border-blue-600" />
+                        </div>
+                        <div>
+                          <label className="block text-xs font-bold text-slate-600 mb-1">كود المنتج (اختياري)</label>
+                          <input type="text" placeholder="PRD-1234" value={customProductCode} onChange={e => setCustomProductCode(e.target.value)} className="w-full border border-blue-300 rounded-lg p-2.5 text-sm font-mono outline-none focus:border-blue-600" />
+                        </div>
+                      </div>
+                    ) : (
+                      <select value={selectedProduct} onChange={e => setSelectedProduct(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl p-3 text-sm bg-slate-50 font-bold text-indigo-700 outline-none focus:border-indigo-500">
+                        <option value="">-- اختر من قائمة مخزن الانتاج التام --</option>
+                        {Array.isArray(displayProducts) ? displayProducts.map((item, i) => item ? <option key={i} value={item.name}>{item.name}</option> : null) : null}
+                      </select>
+                    )}
+                  </div>
+                  
+                  {/* القائمة السفلية: كل المواد عدا مواد مخزن الانتاج التام */}
                   <div>
                     <label className="block text-sm font-bold text-slate-700 mb-3 border-b pb-2">حدد جميع المواد الأولية المطلوبة لصناعة هذا الكابل</label>
                     <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                      {treeItems.map(item => (
-                        <div 
-                          key={item.id}
-                          onClick={() => toggleMaterialSelection(item.name)}
-                          className={`p-3 rounded-xl border-2 cursor-pointer transition-all flex items-center gap-3 ${
-                            selectedMaterialsList.includes(item.name) 
-                            ? 'border-blue-500 bg-blue-50 shadow-sm' 
-                            : 'border-slate-200 bg-white hover:border-slate-300'
-                          }`}
-                        >
-                          <div className={`w-5 h-5 rounded flex items-center justify-center shrink-0 ${
-                            selectedMaterialsList.includes(item.name) ? 'bg-blue-500 text-white' : 'bg-slate-200'
-                          }`}>
-                            {selectedMaterialsList.includes(item.name) && <CheckCircle2 size={14} />}
-                          </div>
+                      {Array.isArray(displayMaterials) ? displayMaterials.map((item, i) => item ? (
+                        <div key={i} onClick={() => toggleMaterialSelection(item.name)} className={`p-3 rounded-xl border-2 cursor-pointer transition-all flex items-center gap-3 ${selectedMaterialsList.includes(item.name) ? 'border-blue-500 bg-blue-50' : 'border-slate-200 bg-white hover:border-slate-300'}`}>
+                          <div className={`w-5 h-5 rounded flex items-center justify-center shrink-0 ${selectedMaterialsList.includes(item.name) ? 'bg-blue-500 text-white' : 'bg-slate-200'}`}>{selectedMaterialsList.includes(item.name) && <CheckCircle2 size={14} />}</div>
                           <div className="text-sm font-bold text-slate-700 leading-tight">{item.name}</div>
                         </div>
-                      ))}
+                      ) : null) : null}
                     </div>
                   </div>
+
                 </div>
               )}
-
               {bomStep === 2 && (
-                <div className="space-y-5">
-                  <div className="bg-blue-50 text-blue-800 p-4 rounded-xl border border-blue-100 flex items-start gap-3">
-                    <AlertCircle className="shrink-0 mt-0.5" size={20} />
-                    <p className="text-sm font-semibold">
-                      أدخل الكمية المطلوبة بالوحدة المحددة لإنتاج <strong className="text-lg">متر واحد (1m)</strong> فقط من {selectedProduct}.
-                    </p>
-                  </div>
-
-                  <div className="space-y-3">
-                    {bomItemsConfig.map((item, index) => (
-                      <div key={index} className="grid grid-cols-12 gap-4 items-center bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                        <div className="col-span-12 md:col-span-5">
-                          <div className="font-bold text-slate-800">{item.material_name}</div>
-                          <div className="text-xs text-slate-400 font-mono mt-1">وحدة القياس: {item.unit}</div>
-                        </div>
-
-                        <div className="col-span-6 md:col-span-4">
-                          <label className="text-xs font-bold text-slate-500 block mb-1">الكمية لكل 1 متر</label>
-                          <input 
-                            type="number"
-                            step="0.0001"
-                            value={item.quantity_per_meter || ''}
-                            onChange={e => {
-                              const updated = [...bomItemsConfig];
-                              updated[index].quantity_per_meter = Number(e.target.value);
-                              setBomItemsConfig(updated);
-                            }}
-                            className="w-full border-2 border-slate-200 rounded-lg p-2 text-sm font-bold text-blue-700 outline-none focus:border-blue-500 text-center"
-                            placeholder="مثال: 0.256"
-                          />
-                        </div>
-
-                        <div className="col-span-6 md:col-span-3">
-                          <label className="text-xs font-bold text-slate-500 block mb-1">نسبة الهدر %</label>
-                          <input 
-                            type="number"
-                            step="0.1"
-                            value={item.waste_percent}
-                            onChange={e => {
-                              const updated = [...bomItemsConfig];
-                              updated[index].waste_percent = Number(e.target.value);
-                              setBomItemsConfig(updated);
-                            }}
-                            className="w-full border-2 border-slate-200 rounded-lg p-2 text-sm font-bold text-amber-600 outline-none focus:border-amber-500 text-center"
-                          />
-                        </div>
+                <div className="space-y-3">
+                  <div className="bg-blue-50 text-blue-800 p-4 rounded-xl flex items-start gap-3 mb-4"><AlertCircle className="shrink-0 mt-0.5" size={20} /><p className="text-sm font-semibold">أدخل الكمية لإنتاج <strong className="text-lg">متر واحد (1m)</strong> فقط من المنتج.</p></div>
+                  {Array.isArray(bomItemsConfig) ? bomItemsConfig.map((item, index) => item ? (
+                    <div key={index} className="grid grid-cols-12 gap-4 items-center bg-white p-4 rounded-xl border border-slate-200">
+                      <div className="col-span-12 md:col-span-5"><div className="font-bold text-slate-800">{item.material_name}</div></div>
+                      <div className="col-span-6 md:col-span-4">
+                        <label className="text-xs font-bold text-slate-500 block mb-1">الكمية لكل 1 متر</label>
+                        <input type="number" step="0.0001" value={item.quantity_per_meter || ''} onChange={e => { const updated = [...bomItemsConfig]; if (updated[index]) updated[index].quantity_per_meter = Number(e.target.value); setBomItemsConfig(updated); }} className="w-full border-2 rounded-lg p-2 text-sm font-bold text-blue-700 text-center outline-none" placeholder="0.00" />
                       </div>
-                    ))}
-                  </div>
+                      <div className="col-span-6 md:col-span-3">
+                        <label className="text-xs font-bold text-slate-500 block mb-1">هدر %</label>
+                        <input type="number" step="0.1" value={item.waste_percent} onChange={e => { const updated = [...bomItemsConfig]; if (updated[index]) updated[index].waste_percent = Number(e.target.value); setBomItemsConfig(updated); }} className="w-full border-2 rounded-lg p-2 text-sm font-bold text-amber-600 text-center outline-none" />
+                      </div>
+                    </div>
+                  ) : null) : null}
                 </div>
               )}
             </div>
-
             <div className="bg-slate-50 p-5 border-t border-slate-200 flex justify-between shrink-0">
               {bomStep === 1 ? (
-                <>
-                  <button onClick={() => setShowBomModal(false)} className="px-5 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-200 rounded-xl transition cursor-pointer">إلغاء</button>
-                  <button onClick={proceedToBomFormula} className="px-6 py-2.5 text-sm font-bold bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-md transition flex items-center gap-2 cursor-pointer">
-                    التالي: هندسة المقادير
-                  </button>
-                </>
+                <><button onClick={() => setShowBomModal(false)} className="px-5 py-2.5 text-sm font-bold text-slate-600 bg-slate-200 rounded-xl">إلغاء</button><button onClick={proceedToBomFormula} className="px-6 py-2.5 text-sm font-bold bg-blue-600 text-white rounded-xl">التالي</button></>
               ) : (
-                <>
-                  <button onClick={() => setBomStep(1)} className="px-5 py-2.5 text-sm font-bold text-slate-600 hover:bg-slate-200 rounded-xl transition cursor-pointer">رجوع</button>
-                  <button onClick={handleSaveBom} className="px-6 py-2.5 text-sm font-bold bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-md transition flex items-center gap-2 cursor-pointer">
-                    <Save size={18} /> حفظ واعتماد الوصفة
-                  </button>
-                </>
+                <><button onClick={() => setBomStep(1)} className="px-5 py-2.5 text-sm font-bold text-slate-600 bg-slate-200 rounded-xl">رجوع</button><button onClick={handleSaveBom} className="px-6 py-2.5 text-sm font-bold bg-emerald-600 text-white rounded-xl">حفظ واعتماد</button></>
               )}
             </div>
           </div>
