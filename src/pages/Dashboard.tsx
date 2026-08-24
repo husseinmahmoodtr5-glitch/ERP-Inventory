@@ -38,7 +38,7 @@ const initialChartData = [
 ];
 
 interface DashboardProps {
-  setTab?: (tab: string) => void; // تم جعلها اختيارية برمجياً لمنع الأخطاء
+  setTab?: (tab: any) => void;
 }
 
 export default function Dashboard({ setTab }: DashboardProps) {
