@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { 
   Factory, Plus, Trash2, Layers, ClipboardList, CheckCircle2, 
-  AlertCircle, X, Settings, Play, Check, Activity, BarChart3, Edit2, Bell
+  AlertCircle, X, Settings, Play, Check, Activity, BarChart3, Edit2, Bell, Clock
 } from 'lucide-react';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
@@ -57,8 +57,8 @@ export default function Production() {
   
   const [boms, setBoms] = useState<BOM[]>([]);
   const [materials, setMaterials] = useState<Material[]>([]);
-  const [liveStock, setLiveStock] = useState<any[]>([]); // 🚀 تم استبدال الحركات العشوائية بجدول الأرصدة الحية
-  const [warehouses, setWarehouses] = useState<any[]>([]); // لحل مشكلة العلاقات (FK)
+  const [liveStock, setLiveStock] = useState<any[]>([]);
+  const [warehouses, setWarehouses] = useState<any[]>([]);
   const [orders, setOrders] = useState<ProductionOrder[]>([]);
   
   const [showBomModal, setShowBomModal] = useState<boolean>(false);
@@ -77,7 +77,7 @@ export default function Production() {
   const [selectedBomId, setSelectedBomId] = useState<string>('');
   const [targetQuantity, setTargetQuantity] = useState<number>(5000);
 
-  // إعدادات الإشعارات (الجرس 🔔)
+  // إعدادات الإشعارات
   const [isNotifOpen, setIsNotifOpen] = useState(false);
   const notifRef = useRef<HTMLDivElement>(null);
   const [notifications, setNotifications] = useState<any[]>([
@@ -118,16 +118,11 @@ export default function Production() {
       if (localOrders) setOrders(JSON.parse(localOrders) || []);
 
       if (supabase) {
-        // 🚀 جلب مباشر وسريع جداً: المواد، المخازن، والرصيد النهائي الجاهز (Anti-Lag)
         const [matRes, whRes, stockRes] = await Promise.all([
           supabase.from('materials').select('*'),
           supabase.from('warehouses').select('*'),
           supabase.from('live_stock_view').select('*')
         ]);
-
-        if (matRes.error) throw matRes.error;
-        if (whRes.error) throw whRes.error;
-        if (stockRes.error) throw stockRes.error;
 
         if (matRes.data) setMaterials(matRes.data as Material[]);
         if (whRes.data) setWarehouses(whRes.data);
@@ -158,7 +153,6 @@ export default function Production() {
     }
   };
 
-  // 🚀 قراءة الرصيد لحظياً بدون أي عمليات حسابية ثقيلة
   const getStock = (itemName: string) => {
     if (!itemName) return 0;
     const targetNorm = normalizeText(itemName);
@@ -198,6 +192,9 @@ export default function Production() {
     return { displayProducts: products, displayMaterials: rawMaterials };
   }, [allAvailableItems]);
 
+  // ==========================================
+  // 🚀 بدء الإنتاج وخصم المواد من المخزن
+  // ==========================================
   const handleStartProduction = async () => {
     if (!selectedBomForCalc) return;
     if (!window.confirm(`تأكيد بدء أمر الإنتاج (${orderNumber})؟ سيتم خصم المواد من المخزن.`)) return;
@@ -207,9 +204,10 @@ export default function Production() {
     const newOutMovements: any[] = [];
     
     const safeItems = Array.isArray(selectedBomForCalc.items) ? selectedBomForCalc.items : [];
-    
-    // جلب كود مخزن الإنتاج لتلبية متطلبات (Foreign Key)
     const prodWarehouse = warehouses.find(w => normalizeText(w.warehouse_name).includes('انتاج')) || { warehouse_code: '2', warehouse_name: 'قسم الإنتاج' };
+
+    // استخراج أرقام فقط للحقول من نوع bigint في Supabase
+    const numericEntryNumber = parseInt(orderNumber.replace(/\D/g, '')) || Date.now();
 
     safeItems.forEach(item => {
       if (!item) return;
@@ -218,22 +216,17 @@ export default function Production() {
       const qtyRounded = Number(grossNeeded.toFixed(3));
 
       materialsUsedSummary.push({ name: item.material_name || '', quantity: qtyRounded, unit: item.unit || '' });
-      
-      const matCode = materials.find(m => normalizeText(m.material_name) === normalizeText(item.material_name))?.material_code || null;
 
       newOutMovements.push({
         transaction_date: todayDate,
         warehouse_name: prodWarehouse.warehouse_name,
-        warehouse_code: prodWarehouse.warehouse_code, // 🛡️ تم إضافة كود المخزن للحماية
+        warehouse_code: Number(prodWarehouse.warehouse_code) || 2,
         material_name: item.material_name,
-        material_code: matCode, // 🛡️ تم إضافة كود المادة للحماية
         unit: item.unit,
         quantity_issued: qtyRounded,
         reels_issued: 0,
-        recipient: 'صالة الإنتاج',
-        notes: `صرف آلي لأمر إنتاج (${orderNumber}) - لإنتاج ${selectedBomForCalc.product_name}`,
         qc_status: 'مقبول (مطابق)',
-        entry_number: orderNumber
+        entry_number: numericEntryNumber
       });
     });
 
@@ -262,9 +255,12 @@ export default function Production() {
     
     generateOrderNumber();
     setActiveTab('LOG');
-    fetchInitialData(); // 🚀 تحديث الأرصدة الحية فوراً
+    fetchInitialData();
   };
 
+  // ==========================================
+  // 🚀 إكمال أمر الإنتاج وإيداع المنتج التام
+  // ==========================================
   const handleCompleteOrder = async (order: ProductionOrder) => {
     if (!order) return;
     if (!window.confirm(`هل اكتمل التصنيع؟ سيتم إضافة (${order.target_quantity.toLocaleString()}) كـ "وارد جديد" إلى المخزن.`)) return;
@@ -272,6 +268,9 @@ export default function Production() {
     const todayDate = new Date().toISOString().split('T')[0];
     const targetWarehouse = warehouses.find(w => normalizeText(w.warehouse_name).includes('تام')) || { warehouse_code: '3', warehouse_name: 'مخزن الانتاج التام' };
     let finalMatCode = '';
+
+    // تحويل رقم الأمر إلى رقم فقط ليلائم حقل entry_number (bigint)
+    const numericEntryNumber = parseInt(order.order_number.replace(/\D/g, '')) || Date.now();
 
     try {
       if (supabase) {
@@ -292,7 +291,7 @@ export default function Production() {
             material_name: order.product_name,
             material_code: finalMatCode,
             warehouse_name: targetWarehouse.warehouse_name,
-            warehouse_code: targetWarehouse.warehouse_code, // 🛡️
+            warehouse_code: Number(targetWarehouse.warehouse_code) || 3,
             unit: order.unit,
             qc_required: false,
             min_stock: 0,
@@ -306,28 +305,29 @@ export default function Production() {
         const finishedProductMovement = {
           transaction_date: todayDate,
           warehouse_name: targetWarehouse.warehouse_name,
-          warehouse_code: targetWarehouse.warehouse_code, // 🛡️
+          warehouse_code: Number(targetWarehouse.warehouse_code) || 3,
           material_name: order.product_name,
-          material_code: finalMatCode, // 🛡️
+          material_code: finalMatCode,
           unit: order.unit,
-          quantity_received: order.target_quantity,
+          quantity_received: Number(order.target_quantity),
           reels_received: 0,
-          source: 'صالة الإنتاج',
-          reference_or_notes: `إيداع آلي لمنتج تام عن أمر الإنتاج (${order.order_number})`,
           qc_status: 'مقبول (مطابق)',
-          entry_number: order.order_number
+          entry_number: numericEntryNumber
         };
 
         const { error: moveError } = await supabase.from('inbound').insert([finishedProductMovement]);
-        if (moveError) throw moveError;
+        if (moveError) {
+          console.error('❌ Supabase Inbound Insert Error:', moveError);
+          throw moveError;
+        }
       }
 
       const safeOrders = Array.isArray(orders) ? orders : [];
       const updatedOrders = safeOrders.map(o => o?.id === order.id ? { ...o, status: 'COMPLETED' as const, completed_date: new Date().toLocaleString('ar-IQ') } : o);
       saveOrders(updatedOrders);
       
-      alert(`🎉 تمت العملية بنجاح!\n\nتم إيداع المنتج في مخزن الإنتاج التام.\n(إذا كان المنتج جديداً، تم تعريفه تلقائياً في فهرس المخازن).`);
-      fetchInitialData(); // 🚀 تحديث الأرصدة الحية فوراً
+      alert(`🎉 تمت العملية بنجاح!\n\nتم إيداع المنتج في مخزن الإنتاج التام.`);
+      fetchInitialData();
       
     } catch (err: any) {
       console.error('خطأ بالاتصال بالسيرفر', err);
@@ -452,6 +452,7 @@ export default function Production() {
 
   return (
     <div dir="rtl" className="p-6 bg-slate-50 min-h-screen font-sans pb-24">
+      {/* الرأس والتبويبات */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
@@ -500,7 +501,7 @@ export default function Production() {
                         className={`p-3 border-b border-slate-50 cursor-pointer transition ${notif.isRead ? 'bg-white hover:bg-slate-50' : 'bg-blue-50/50 hover:bg-blue-50'}`}
                       >
                         <div className="flex justify-between items-start mb-1">
-                          <span className={`text-xs font-bold text-slate-500`}>تنبيه جديد</span>
+                          <span className="text-xs font-bold text-slate-500">تنبيه جديد</span>
                           <span className="text-[10px] text-slate-400 font-mono">{notif.date}</span>
                         </div>
                         <p className={`text-sm mt-1 ${notif.isRead ? 'text-slate-600' : 'text-slate-800 font-medium'}`}>{notif.message}</p>
@@ -514,6 +515,7 @@ export default function Production() {
         </div>
       </div>
 
+      {/* كروت الإحصائيات السريعة */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm flex items-center justify-between">
           <div><div className="text-xs font-bold text-slate-400">الأوامر قيد التشغيل حالياً</div><div className="text-2xl font-bold text-blue-600 mt-1">{activeOrdersCount} أمر</div></div>
@@ -529,6 +531,7 @@ export default function Production() {
         </div>
       </div>
 
+      {/* تبويب: أمر إنتاج جديد */}
       {activeTab === 'ORDERS' && (
         <div className="space-y-6 animate-in fade-in">
           <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
@@ -604,6 +607,7 @@ export default function Production() {
         </div>
       )}
 
+      {/* تبويب: سجل أوامر الإنتاج */}
       {activeTab === 'LOG' && (
         <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm animate-in fade-in">
           <h2 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><Activity className="text-blue-600" size={20} /> سجل أوامر الإنتاج</h2>
@@ -628,11 +632,25 @@ export default function Production() {
                       <td className="p-3 text-center font-bold text-slate-700">{Number(order.target_quantity).toLocaleString()} {order.unit}</td>
                       <td className="p-3 text-center text-xs font-mono text-slate-500">{order.start_date}</td>
                       <td className="p-3 text-center">
-                        {order.status === 'IN_PROGRESS' ? <span className="inline-flex items-center gap-1.5 bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-xs font-bold animate-pulse"><Activity size={14} /> قيد التشغيل</span> : <span className="inline-flex items-center gap-1.5 bg-emerald-100 text-emerald-800 px-3 py-1 rounded-full text-xs font-bold"><CheckCircle2 size={14} /> مكتمل</span>}
+                        {order.status === 'IN_PROGRESS' ? (
+                          <span className="inline-flex items-center gap-1.5 bg-blue-100 text-blue-800 px-3 py-1 rounded-lg text-xs font-bold">
+                            <Clock size={14} /> قيد التشغيل
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1.5 bg-emerald-100 text-emerald-800 px-3 py-1 rounded-lg text-xs font-bold">
+                            <CheckCircle2 size={14} /> مكتمل
+                          </span>
+                        )}
                       </td>
                       <td className="p-3 text-center">
-                        {order.status === 'IN_PROGRESS' && <button onClick={() => handleCompleteOrder(order)} className="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold shadow transition flex items-center gap-1 mx-auto cursor-pointer"><Check size={14} /> إكمال وإيداع</button>}
-                        {order.status === 'COMPLETED' && <span className="text-xs text-slate-400 font-bold">تم الإيداع</span>}
+                        {order.status === 'IN_PROGRESS' && (
+                          <button 
+                            onClick={() => handleCompleteOrder(order)}
+                            className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-3 py-1.5 rounded-lg font-bold transition flex items-center gap-1 mx-auto shadow-sm"
+                          >
+                            <Check size={14} /> إكمال وإيداع بالمخزن
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -643,127 +661,138 @@ export default function Production() {
         </div>
       )}
 
+      {/* تبويب: إدارة وصفات التصنيع (BOM) */}
       {activeTab === 'BOM' && (
-        <div className="animate-in fade-in">
-          <div className="flex justify-between items-center mb-6">
-            <div><h2 className="text-xl font-bold text-slate-800">وصفات التصنيع المعتمدة (BOM)</h2><p className="text-sm text-slate-500 mt-1">المقادير المعيارية لإنتاج متر واحد.</p></div>
-            <button onClick={() => { resetBomModal(); setShowBomModal(true); }} className="bg-slate-800 hover:bg-slate-900 text-white px-5 py-2.5 rounded-xl font-bold flex items-center gap-2 shadow-md cursor-pointer"><Plus size={20} /> بناء وصفة جديدة</button>
+        <div className="space-y-6 animate-in fade-in">
+          <div className="flex justify-between items-center bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+            <div>
+              <h2 className="text-lg font-bold text-slate-800">قائمة وصفات التصنيع (BOM)</h2>
+              <p className="text-xs text-slate-500">حدد المقادير والمعادلات المعيارية لكل متر إنتاج.</p>
+            </div>
+            <button 
+              onClick={() => { resetBomModal(); setShowBomModal(true); }} 
+              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-bold text-sm flex items-center gap-2 transition"
+            >
+              <Plus size={18} /> إنشاء وصفة جديدة
+            </button>
           </div>
-          {safeBomsCalc.length === 0 ? <div className="bg-white p-12 text-center rounded-2xl border border-dashed border-slate-300"><Layers size={32} className="text-slate-400 mx-auto mb-4" /><h3 className="text-lg font-bold text-slate-700">لا توجد وصفات</h3></div> : (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {safeBomsCalc.map(bom => bom && (
-                <div key={bom.id} className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                  <div className="bg-slate-800 p-4 flex justify-between items-center">
-                    <div><h3 className="font-bold text-white text-lg">{bom.product_name}</h3><p className="text-xs text-slate-300 mt-1">الكمية المعيارية: 1 {bom.unit}</p></div>
-                    <div className="flex items-center gap-1">
-                      <button onClick={() => handleEditBom(bom)} className="text-blue-400 hover:text-white hover:bg-blue-500 p-2 rounded-lg transition" title="تعديل الوصفة">
-                        <Edit2 size={18} />
-                      </button>
-                      <button onClick={() => handleDeleteBom(bom.id)} className="text-rose-400 hover:text-white hover:bg-rose-500 p-2 rounded-lg transition" title="حذف الوصفة">
-                        <Trash2 size={18} />
-                      </button>
-                    </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {safeBomsCalc.map(bom => bom && (
+              <div key={bom.id} className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm hover:shadow-md transition">
+                <div className="flex justify-between items-start mb-3 border-b pb-3">
+                  <div>
+                    <h3 className="font-bold text-slate-900 text-base">{bom.product_name}</h3>
+                    <span className="text-xs font-mono bg-slate-100 text-slate-600 px-2 py-0.5 rounded mt-1 inline-block">{bom.product_code}</span>
                   </div>
-                  <div className="p-5">
-                    <div className="space-y-3">
-                      {Array.isArray(bom.items) ? bom.items.map((item, idx) => item && (
-                        <div key={idx} className="flex justify-between items-center bg-slate-50 p-3 rounded-xl border border-slate-100">
-                          <span className="font-bold text-slate-700 text-sm flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-blue-500"></div>{item.material_name}</span>
-                          <div className="text-right"><div className="font-mono font-bold text-blue-700 text-sm">{item.quantity_per_meter} {item.unit}</div><div className="text-[10px] font-bold text-slate-400 mt-0.5">هدر: {item.waste_percent}%</div></div>
-                        </div>
-                      )) : null}
-                    </div>
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => handleEditBom(bom)} className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-slate-100 rounded-lg transition"><Edit2 size={16} /></button>
+                    <button onClick={() => handleDeleteBom(bom.id)} className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-slate-100 rounded-lg transition"><Trash2 size={16} /></button>
                   </div>
                 </div>
-              ))}
-            </div>
-          )}
+                <div className="space-y-2">
+                  <div className="text-xs font-bold text-slate-400 mb-1">المكونات لكل 1 متر:</div>
+                  {Array.isArray(bom.items) && bom.items.map((it, idx) => (
+                    <div key={idx} className="flex justify-between text-xs bg-slate-50 p-2 rounded border border-slate-100">
+                      <span className="font-bold text-slate-700">{it.material_name}</span>
+                      <span className="font-mono text-blue-600 font-bold">{it.quantity_per_meter} {it.unit} (هدر {it.waste_percent}%)</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
+      {/* نافذة إنشاء / تعديل الوصفة (Modal) */}
       {showBomModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh]">
-            <div className="bg-slate-800 p-5 flex justify-between items-center shrink-0">
-              <h3 className="text-xl font-bold text-white flex items-center gap-2"><Settings className="text-blue-400" /> {bomStep === 1 ? 'الخطوة 1: تحديد المواد' : 'الخطوة 2: هندسة المقادير'}</h3>
-              <button onClick={() => setShowBomModal(false)} className="text-slate-400 hover:text-white cursor-pointer"><X size={24} /></button>
-            </div>
-            <div className="p-6 overflow-y-auto grow">
-              {bomStep === 1 && (
-                <div className="space-y-6">
-                  
-                  {/* إدخال المنتج التام (من المخزن أو جديد) */}
-                  <div>
-                    <div className="flex justify-between items-end mb-2">
-                      <label className="block text-sm font-bold text-slate-700">المنتج التام المراد تصنيعه</label>
-                      <button 
-                        onClick={() => setIsCustomProduct(!isCustomProduct)}
-                        className="text-xs font-bold text-blue-600 hover:underline bg-blue-50 px-3 py-1 rounded-lg"
-                      >
-                        {isCustomProduct ? 'العودة لقائمة المخزن' : '+ إدخال منتج جديد يدوياً'}
-                      </button>
-                    </div>
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl relative max-h-[90vh] overflow-y-auto">
+            <button onClick={() => setShowBomModal(false)} className="absolute top-4 left-4 text-slate-400 hover:text-slate-600"><X size={20} /></button>
+            
+            <h3 className="text-lg font-bold text-slate-900 mb-4">{editingBomId ? 'تعديل وصفة تصنيع' : 'إنشاء وصفة تصنيع جديدة (BOM)'}</h3>
 
-                    {isCustomProduct ? (
-                      <div className="grid grid-cols-2 gap-3 bg-blue-50 p-4 rounded-xl border border-blue-200">
-                        <div>
-                          <label className="block text-xs font-bold text-slate-600 mb-1">اسم المنتج الجديد *</label>
-                          <input type="text" placeholder="مثال: كابل 2x35 ملم" value={customProductName} onChange={e => setCustomProductName(e.target.value)} className="w-full border border-blue-300 rounded-lg p-2.5 text-sm font-bold outline-none focus:border-blue-600" />
-                        </div>
-                        <div>
-                          <label className="block text-xs font-bold text-slate-600 mb-1">كود المنتج (اختياري)</label>
-                          <input type="text" placeholder="PRD-1234" value={customProductCode} onChange={e => setCustomProductCode(e.target.value)} className="w-full border border-blue-300 rounded-lg p-2.5 text-sm font-mono outline-none focus:border-blue-600" />
-                        </div>
-                      </div>
-                    ) : (
-                      <select value={selectedProduct} onChange={e => setSelectedProduct(e.target.value)} className="w-full border-2 border-slate-200 rounded-xl p-3 text-sm bg-slate-50 font-bold text-indigo-700 outline-none focus:border-indigo-500">
-                        <option value="">-- اختر من قائمة مخزن الانتاج التام --</option>
-                        {Array.isArray(displayProducts) ? displayProducts.map((item, i) => item ? <option key={i} value={item.name}>{item.name}</option> : null) : null}
-                      </select>
-                    )}
-                  </div>
-                  
-                  {/* القائمة السفلية: كل المواد عدا مواد مخزن الانتاج التام */}
-                  <div>
-                    <label className="block text-sm font-bold text-slate-700 mb-3 border-b pb-2">حدد جميع المواد الأولية المطلوبة لصناعة هذا الكابل</label>
-                    <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                      {Array.isArray(displayMaterials) ? displayMaterials.map((item, i) => item ? (
-                        <div key={i} onClick={() => toggleMaterialSelection(item.name)} className={`p-3 rounded-xl border-2 cursor-pointer transition-all flex items-center gap-3 ${selectedMaterialsList.includes(item.name) ? 'border-blue-500 bg-blue-50' : 'border-slate-200 bg-white hover:border-slate-300'}`}>
-                          <div className={`w-5 h-5 rounded flex items-center justify-center shrink-0 ${selectedMaterialsList.includes(item.name) ? 'bg-blue-500 text-white' : 'bg-slate-200'}`}>{selectedMaterialsList.includes(item.name) && <CheckCircle2 size={14} />}</div>
-                          <div className="text-sm font-bold text-slate-700 leading-tight">{item.name}</div>
-                        </div>
-                      ) : null) : null}
+            {bomStep === 1 && (
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-bold text-slate-700 mb-2">اختر المنتج أو اكتب منتج جديد</label>
+                  {!isCustomProduct ? (
+                    <select value={selectedProduct} onChange={e => setSelectedProduct(e.target.value)} className="w-full border p-2.5 rounded-lg text-sm bg-white font-bold">
+                      <option value="">-- اختر من المنتجات التامة المسجلة --</option>
+                      {displayProducts.map((p, i) => <option key={i} value={p.name}>{p.name} [{p.code}]</option>)}
+                    </select>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-2">
+                      <input type="text" placeholder="اسم المنتج الجديد" value={customProductName} onChange={e => setCustomProductName(e.target.value)} className="border p-2.5 rounded-lg text-sm font-bold"/>
+                      <input type="text" placeholder="كود المنتج (اختياري)" value={customProductCode} onChange={e => setCustomProductCode(e.target.value)} className="border p-2.5 rounded-lg text-sm font-bold"/>
                     </div>
-                  </div>
+                  )}
+                  <button onClick={() => setIsCustomProduct(!isCustomProduct)} className="text-xs text-blue-600 font-bold mt-1.5 underline">
+                    {isCustomProduct ? 'العودة للاختيار من القائمة' : 'إدخال منتج جديد يدويًا'}
+                  </button>
+                </div>
 
+                <div>
+                  <label className="block text-sm font-bold text-slate-700 mb-2">حدد المواد الأولية التي تدخل في تصنيعه</label>
+                  <div className="max-h-60 overflow-y-auto border rounded-lg p-3 space-y-1 bg-slate-50">
+                    {displayMaterials.map((m, idx) => (
+                      <label key={idx} className="flex items-center justify-between p-2 hover:bg-white rounded cursor-pointer transition">
+                        <span className="text-sm font-bold text-slate-800">{m.name} ({m.warehouse_name})</span>
+                        <input type="checkbox" checked={selectedMaterialsList.includes(m.name)} onChange={() => toggleMaterialSelection(m.name)} className="w-4 h-4 text-blue-600 rounded"/>
+                      </label>
+                    ))}
+                  </div>
                 </div>
-              )}
-              {bomStep === 2 && (
-                <div className="space-y-3">
-                  <div className="bg-blue-50 text-blue-800 p-4 rounded-xl flex items-start gap-3 mb-4"><AlertCircle className="shrink-0 mt-0.5" size={20} /><p className="text-sm font-semibold">أدخل الكمية لإنتاج <strong className="text-lg">متر واحد (1m)</strong> فقط من المنتج.</p></div>
-                  {Array.isArray(bomItemsConfig) ? bomItemsConfig.map((item, index) => item ? (
-                    <div key={index} className="grid grid-cols-12 gap-4 items-center bg-white p-4 rounded-xl border border-slate-200">
-                      <div className="col-span-12 md:col-span-5"><div className="font-bold text-slate-800">{item.material_name}</div></div>
-                      <div className="col-span-6 md:col-span-4">
-                        <label className="text-xs font-bold text-slate-500 block mb-1">الكمية لكل 1 متر</label>
-                        <input type="number" step="0.0001" value={item.quantity_per_meter || ''} onChange={e => { const updated = [...bomItemsConfig]; if (updated[index]) updated[index].quantity_per_meter = Number(e.target.value); setBomItemsConfig(updated); }} className="w-full border-2 rounded-lg p-2 text-sm font-bold text-blue-700 text-center outline-none" placeholder="0.00" />
+
+                <div className="flex justify-end pt-4 border-t">
+                  <button onClick={proceedToBomFormula} className="bg-blue-600 text-white px-6 py-2.5 rounded-xl font-bold text-sm">المتابعة لتحديد الكميات ←</button>
+                </div>
+              </div>
+            )}
+
+            {bomStep === 2 && (
+              <div className="space-y-4">
+                <p className="text-sm text-slate-600 font-bold">أدخل الكمية المطلوبة ونسبة الهدر المتوقعة لكل 1 متر من المنتج:</p>
+                
+                <div className="space-y-3 max-h-60 overflow-y-auto p-1">
+                  {bomItemsConfig.map((item, idx) => (
+                    <div key={idx} className="flex items-center gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200">
+                      <span className="text-sm font-bold text-slate-800 flex-1">{item.material_name}</span>
+                      <div className="w-28">
+                        <input 
+                          type="number" step="0.00001" placeholder="الكمية" 
+                          value={item.quantity_per_meter || ''} 
+                          onChange={e => {
+                            const val = parseFloat(e.target.value) || 0;
+                            setBomItemsConfig(prev => prev.map((it, i) => i === idx ? { ...it, quantity_per_meter: val } : it));
+                          }}
+                          className="w-full border p-2 rounded text-sm text-center font-bold"
+                        />
                       </div>
-                      <div className="col-span-6 md:col-span-3">
-                        <label className="text-xs font-bold text-slate-500 block mb-1">هدر %</label>
-                        <input type="number" step="0.1" value={item.waste_percent} onChange={e => { const updated = [...bomItemsConfig]; if (updated[index]) updated[index].waste_percent = Number(e.target.value); setBomItemsConfig(updated); }} className="w-full border-2 rounded-lg p-2 text-sm font-bold text-amber-600 text-center outline-none" />
+                      <span className="text-xs text-slate-500 font-bold">{item.unit}</span>
+                      <div className="w-20">
+                        <input 
+                          type="number" step="0.1" placeholder="هدر %" 
+                          value={item.waste_percent} 
+                          onChange={e => {
+                            const val = parseFloat(e.target.value) || 0;
+                            setBomItemsConfig(prev => prev.map((it, i) => i === idx ? { ...it, waste_percent: val } : it));
+                          }}
+                          className="w-full border p-2 rounded text-sm text-center font-bold text-amber-600"
+                        />
                       </div>
+                      <span className="text-xs text-slate-400">%</span>
                     </div>
-                  ) : null) : null}
+                  ))}
                 </div>
-              )}
-            </div>
-            <div className="bg-slate-50 p-5 border-t border-slate-200 flex justify-between shrink-0">
-              {bomStep === 1 ? (
-                <><button onClick={() => setShowBomModal(false)} className="px-5 py-2.5 text-sm font-bold text-slate-600 bg-slate-200 rounded-xl">إلغاء</button><button onClick={proceedToBomFormula} className="px-6 py-2.5 text-sm font-bold bg-blue-600 text-white rounded-xl">التالي</button></>
-              ) : (
-                <><button onClick={() => setBomStep(1)} className="px-5 py-2.5 text-sm font-bold text-slate-600 bg-slate-200 rounded-xl">رجوع</button><button onClick={handleSaveBom} className="px-6 py-2.5 text-sm font-bold bg-emerald-600 text-white rounded-xl">حفظ واعتماد</button></>
-              )}
-            </div>
+
+                <div className="flex justify-between pt-4 border-t">
+                  <button onClick={() => setBomStep(1)} className="bg-slate-200 text-slate-700 px-4 py-2 rounded-xl font-bold text-sm">→ السابق</button>
+                  <button onClick={handleSaveBom} className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2 rounded-xl font-bold text-sm">حفظ الوصفة بنجاح</button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

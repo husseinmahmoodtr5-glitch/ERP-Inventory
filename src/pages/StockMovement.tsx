@@ -257,9 +257,31 @@ export default function QuantumWarehouse() {
     }
   };
 
-  // 🚀 دالة قراءة الرصيد السريعة (بدون المرور بحلقات التكرار المسببة للاج)
+  // 🚀 دالة حساب الرصيد من الحركات المحلية (مطابقة لتقارير الجرد - 100% متسقة)
+  // تحسب: إجمالي الوارد - إجمالي الصادر لكل مادة من مصفوفة movements
+  const calculateMaterialStock = (matName: string) => {
+    if (!matName) return 0;
+    const safeMovements = Array.isArray(movements) ? movements : [];
+    
+    const allIn = safeMovements.filter(m => m?.material_name === matName && m?.type === 'IN');
+    const allOut = safeMovements.filter(m => m?.material_name === matName && m?.type === 'OUT');
+    
+    const totalInQty = allIn.reduce((sum, m) => sum + (Number(m?.quantity) || 0), 0);
+    const totalOutQty = allOut.reduce((sum, m) => sum + (Number(m?.quantity) || 0), 0);
+    
+    return totalInQty - totalOutQty;
+  };
+
+  // 🚀 دالة قراءة الرصيد المحسنة: تستخدم الحساب المحلي أولاً (دقيق وفوري)، 
+  // وتعود لـ live_stock_view كاحتياطي فقط للعرض في الشجرة
   const getMaterialStock = (matName: string) => {
     if (!matName) return 0;
+    
+    // الأولوية: الحساب المحلي من الحركات (مضمون الدقة ومتسق مع التقارير)
+    const calculatedStock = calculateMaterialStock(matName);
+    if (calculatedStock !== 0) return calculatedStock;
+    
+    // الاحتياط: قراءة من الـ View (للحالات التي لا توجد فيها حركات بعد)
     const stockRecord = liveStock.find(s => s.material_name === matName);
     return stockRecord ? Number(stockRecord.current_balance) : 0;
   };
@@ -315,6 +337,8 @@ export default function QuantumWarehouse() {
     }
 
     // 🚀 التعديل الهام هنا: تم إزالة حقل source و recipient لمنع خطأ قاعدة البيانات
+    // 🛡️ إصلاح: تحويل النصوص الفارغة إلى null للحقول الرقمية (bigint/numeric) لتجنب خطأ "invalid input syntax for type bigint"
+    const parsedDocNumber = moveForm.doc_number && !isNaN(Number(moveForm.doc_number)) ? Number(moveForm.doc_number) : null;
     const payloadInbound = {
       transaction_date: moveForm.date, 
       warehouse_name: moveForm.warehouse_name,
@@ -323,10 +347,10 @@ export default function QuantumWarehouse() {
       material_code: selectedMat?.material_code || null, 
       unit: selectedMat?.unit || null, 
       quantity_received: moveForm.quantity, 
-      reels_received: moveForm.reels,
+      reels_received: moveForm.reels ? Number(moveForm.reels) : null,
       reference_or_notes: moveForm.notes, 
       qc_status: moveForm.qc_status, 
-      entry_number: moveForm.doc_number
+      entry_number: parsedDocNumber
     };
 
     const payloadOutbound = {
@@ -337,10 +361,10 @@ export default function QuantumWarehouse() {
       material_code: selectedMat?.material_code || null, 
       unit: selectedMat?.unit || null, 
       quantity_issued: moveForm.quantity, 
-      reels_issued: moveForm.reels,
+      reels_issued: moveForm.reels ? Number(moveForm.reels) : null,
       notes: moveForm.notes, 
       qc_status: moveForm.qc_status, 
-      entry_number: moveForm.doc_number
+      entry_number: parsedDocNumber
     };
 
     try {
@@ -992,7 +1016,7 @@ export default function QuantumWarehouse() {
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-xs font-semibold text-slate-600 mb-1">رقم السند</label>
-                    <input type="text" value={moveForm.doc_number} onChange={e => setMoveForm({...moveForm, doc_number: e.target.value})} className="w-full border rounded-lg p-2 text-sm font-mono outline-none" />
+                    <input type="number" value={moveForm.doc_number || ''} onChange={e => setMoveForm({...moveForm, doc_number: e.target.value})} className="w-full border rounded-lg p-2 text-sm font-mono outline-none" placeholder="رقم السند (أرقام فقط)" />
                   </div>
                   <div>
                     <label className="block text-xs font-semibold text-slate-600 mb-1">الملاحظات</label>
